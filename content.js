@@ -732,6 +732,8 @@ function createLoopStation() {
     renderLoop();
 
     // Knob handlers
+    let knobDisplayTimeout = null;
+
     document.querySelectorAll('.large-knob').forEach(knob => {
         let isDragging = false;
         let startY = 0;
@@ -745,10 +747,20 @@ function createLoopStation() {
                 if (knob.dataset.param === 'vol') {
                     // Control browser tab volume directly
                     videoEl.volume = value / 100;
+                    // Show on display
+                    display.updateDisplayText('VOLUME', `${Math.round(value)}%`);
                 } else if (knob.dataset.param === 'tempo') {
                     const rate = 0.5 + (value / 100) * 1.5;
                     videoEl.playbackRate = rate;
+                    // Show on display
+                    display.updateDisplayText('TEMPO', `${rate.toFixed(2)}x`);
                 }
+
+                // Clear any existing timeout and set new one to restore display after 2 seconds
+                clearTimeout(knobDisplayTimeout);
+                knobDisplayTimeout = setTimeout(() => {
+                    display.showLoopInfo(looper);
+                }, 2000);
             }
         }
 
@@ -808,11 +820,11 @@ function createLoopStation() {
                     break;
             }
 
-            // Reset display
+            // Reset display after 2 seconds
             clearTimeout(timeoutId);
             timeoutId = setTimeout(() => {
                 display.showLoopInfo(looper);
-            }, 1000);
+            }, 2000);
         }
 
         toggle.addEventListener('mousedown', (e) => {
