@@ -649,23 +649,25 @@ function createLoopStation() {
             </div>
 
             <!-- Footswitch Section -->
-            <div style="
+            <div id="footswitch" style="
                 background: linear-gradient(135deg, #2a0a08 0%, #1a0504 100%);
                 border-radius: 15px;
                 padding: 40px;
                 box-shadow: inset 0 3px 8px rgba(0,0,0,0.9);
                 position: relative;
+                cursor: pointer;
+                user-select: none;
+                transition: all 0.2s ease;
             ">
-                <div id="footswitch" style="
+                <div style="
                     color: #3a3a3a;
                     font-size: 30px;
                     font-weight: bold;
                     text-align: center;
                     letter-spacing: 2px;
                     text-shadow: 0 2px 4px rgba(0,0,0,0.8);
-                    cursor: pointer;
-                    user-select: none;
                     transition: all 0.2s ease;
+                    pointer-events: none;
                 ">REC</div>
             </div>
 
@@ -736,16 +738,18 @@ function createLoopStation() {
         let startY = 0;
         let startValue = 0;
 
-        function updateKnobRotation(value) {
+        function updateKnobRotation(value, skipAudioUpdate = false) {
             const rotation = -135 + (value * 2.7);
             knob.style.transform = `rotate(${rotation}deg)`;
 
-            if (knob.dataset.param === 'vol') {
-                // Control browser tab volume directly
-                videoEl.volume = value / 100;
-            } else if (knob.dataset.param === 'tempo') {
-                const rate = 0.5 + (value / 100) * 1.5;
-                videoEl.playbackRate = rate;
+            if (!skipAudioUpdate) {
+                if (knob.dataset.param === 'vol') {
+                    // Control browser tab volume directly
+                    videoEl.volume = value / 100;
+                } else if (knob.dataset.param === 'tempo') {
+                    const rate = 0.5 + (value / 100) * 1.5;
+                    videoEl.playbackRate = rate;
+                }
             }
         }
 
@@ -768,8 +772,8 @@ function createLoopStation() {
             isDragging = false;
         });
 
-        // Initialize
-        updateKnobRotation(parseFloat(knob.dataset.value));
+        // Initialize knob position without triggering audio changes
+        updateKnobRotation(parseFloat(knob.dataset.value), true);
     });
 
     // Toggle switch handlers
@@ -837,30 +841,31 @@ function createLoopStation() {
 
     // Footswitch handler
     const footswitch = document.getElementById('footswitch');
+    const footswitchText = footswitch.querySelector('div');
     footswitch.addEventListener('click', () => {
         if (!pedalState.recording && !pedalState.playing) {
-            // Set Point A
+            // First click: Set Point A - show red REC
             pedalState.recording = true;
-            footswitch.textContent = 'PLAY';
-            footswitch.style.color = '#ff0000';
-            footswitch.style.textShadow = '0 0 20px #ff0000, 0 2px 4px rgba(0,0,0,0.8)';
+            footswitchText.textContent = 'REC';
+            footswitchText.style.color = '#ff0000';
+            footswitchText.style.textShadow = '0 0 20px #ff0000, 0 2px 4px rgba(0,0,0,0.8)';
             looper.setPointA();
             display.updateDisplayText('SET A', display.formatTime(looper.state.pointA));
         } else if (pedalState.recording) {
-            // Set Point B and start loop
+            // Second click: Set Point B and start loop - show green PLAY
             pedalState.recording = false;
             pedalState.playing = true;
-            footswitch.textContent = 'STOP';
-            footswitch.style.color = '#00ff00';
-            footswitch.style.textShadow = '0 0 20px #00ff00, 0 2px 4px rgba(0,0,0,0.8)';
+            footswitchText.textContent = 'PLAY';
+            footswitchText.style.color = '#00ff00';
+            footswitchText.style.textShadow = '0 0 20px #00ff00, 0 2px 4px rgba(0,0,0,0.8)';
             looper.setPointB();
             manip.setLoopPoints(looper);
         } else {
-            // Stop loop but continue video
+            // Third click: Stop loop - show dark grey REC
             pedalState.playing = false;
-            footswitch.textContent = 'REC';
-            footswitch.style.color = '#3a3a3a';
-            footswitch.style.textShadow = '0 2px 4px rgba(0,0,0,0.8)';
+            footswitchText.textContent = 'REC';
+            footswitchText.style.color = '#3a3a3a';
+            footswitchText.style.textShadow = '0 2px 4px rgba(0,0,0,0.8)';
             looper.stopLoop();
             display.updateDisplayText('STOPPED', '--------');
 
