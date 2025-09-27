@@ -705,12 +705,11 @@ function createLoopStation() {
     looper.state.activeMedia = videoEl;
     manip.state.activeMedia = videoEl;
 
-    // Initialize audio
-    Promise.all([
-        looper.setupAudioNodes(videoEl),
-        audio.setupHighQualityAudio(videoEl)
-    ]).then(() => {
+    // Initialize audio - only setup one audio context to avoid conflicts
+    looper.setupAudioNodes(videoEl).then(() => {
         console.log('Loop station initialized');
+    }).catch(e => {
+        console.warn('Audio setup skipped:', e);
     });
 
     // Initialize display
