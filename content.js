@@ -503,30 +503,30 @@ function createLoopStation() {
                         <div style="display: flex; flex-direction: column; align-items: center;">
                             <div class="toggle-switch" data-toggle="jog-a" style="
                                 position: relative;
-                                width: 42px;
-                                height: 24px;
+                                width: 50px;
+                                height: 30px;
                                 background: #1a0504;
-                                border-radius: 14px;
-                                border: 1px solid #000;
-                                box-shadow: inset 0 1px 3px rgba(0,0,0,0.8);
+                                border-radius: 15px;
+                                border: 2px solid #000;
+                                box-shadow: inset 0 2px 5px rgba(0,0,0,0.8);
                                 cursor: pointer;
                             ">
                                 <div class="toggle-handle" style="
                                     position: absolute;
-                                    width: 18px;
-                                    height: 18px;
+                                    width: 22px;
+                                    height: 22px;
                                     background: linear-gradient(135deg, #f0f0f0 0%, #d0d0d0 100%);
                                     border-radius: 50%;
                                     top: 2px;
                                     left: 50%;
                                     transform: translateX(-50%);
                                     transition: all 0.15s ease;
-                                    box-shadow: 0 1px 3px rgba(0,0,0,0.6), inset 0 1px 1px rgba(255,255,255,0.5);
+                                    box-shadow: 0 2px 4px rgba(0,0,0,0.6), inset 0 1px 2px rgba(255,255,255,0.5);
                                 "></div>
                             </div>
                             <label style="
                                 color: rgba(255,255,255,0.8);
-                                font-size: 7px;
+                                font-size: 8px;
                                 font-weight: bold;
                                 text-transform: uppercase;
                                 margin-top: 4px;
@@ -537,21 +537,21 @@ function createLoopStation() {
                         <div style="display: flex; flex-direction: column; align-items: center;">
                             <div class="toggle-switch" data-toggle="jog-b" style="
                                 position: relative;
-                                width: 42px;
-                                height: 24px;
+                                width: 50px;
+                                height: 30px;
                                 background: #1a0504;
-                                border-radius: 20px;
+                                border-radius: 15px;
                                 border: 2px solid #000;
                                 box-shadow: inset 0 2px 5px rgba(0,0,0,0.8);
                                 cursor: pointer;
                             ">
                                 <div class="toggle-handle" style="
                                     position: absolute;
-                                    width: 25px;
-                                    height: 25px;
+                                    width: 22px;
+                                    height: 22px;
                                     background: linear-gradient(135deg, #f0f0f0 0%, #d0d0d0 100%);
                                     border-radius: 50%;
-                                    top: 3px;
+                                    top: 2px;
                                     left: 50%;
                                     transform: translateX(-50%);
                                     transition: all 0.15s ease;
@@ -560,10 +560,10 @@ function createLoopStation() {
                             </div>
                             <label style="
                                 color: rgba(255,255,255,0.8);
-                                font-size: 9px;
+                                font-size: 8px;
                                 font-weight: bold;
                                 text-transform: uppercase;
-                                margin-top: 6px;
+                                margin-top: 4px;
                                 letter-spacing: 0.5px;
                             ">JOG B</label>
                         </div>
@@ -571,21 +571,21 @@ function createLoopStation() {
                         <div style="display: flex; flex-direction: column; align-items: center;">
                             <div class="toggle-switch" data-toggle="section" style="
                                 position: relative;
-                                width: 60px;
-                                height: 35px;
+                                width: 50px;
+                                height: 30px;
                                 background: #1a0504;
-                                border-radius: 20px;
+                                border-radius: 15px;
                                 border: 2px solid #000;
                                 box-shadow: inset 0 2px 5px rgba(0,0,0,0.8);
                                 cursor: pointer;
                             ">
                                 <div class="toggle-handle" style="
                                     position: absolute;
-                                    width: 25px;
-                                    height: 25px;
+                                    width: 22px;
+                                    height: 22px;
                                     background: linear-gradient(135deg, #f0f0f0 0%, #d0d0d0 100%);
                                     border-radius: 50%;
-                                    top: 3px;
+                                    top: 2px;
                                     left: 50%;
                                     transform: translateX(-50%);
                                     transition: all 0.15s ease;
@@ -594,10 +594,10 @@ function createLoopStation() {
                             </div>
                             <label style="
                                 color: rgba(255,255,255,0.8);
-                                font-size: 9px;
+                                font-size: 8px;
                                 font-weight: bold;
                                 text-transform: uppercase;
-                                margin-top: 6px;
+                                margin-top: 4px;
                                 letter-spacing: 0.5px;
                             ">SECTION</label>
                         </div>
@@ -605,21 +605,21 @@ function createLoopStation() {
                         <div style="display: flex; flex-direction: column; align-items: center;">
                             <div class="toggle-switch" data-toggle="length" style="
                                 position: relative;
-                                width: 60px;
-                                height: 35px;
+                                width: 50px;
+                                height: 30px;
                                 background: #1a0504;
-                                border-radius: 20px;
+                                border-radius: 15px;
                                 border: 2px solid #000;
                                 box-shadow: inset 0 2px 5px rgba(0,0,0,0.8);
                                 cursor: pointer;
                             ">
                                 <div class="toggle-handle" style="
                                     position: absolute;
-                                    width: 25px;
-                                    height: 25px;
+                                    width: 22px;
+                                    height: 22px;
                                     background: linear-gradient(135deg, #f0f0f0 0%, #d0d0d0 100%);
                                     border-radius: 50%;
-                                    top: 3px;
+                                    top: 2px;
                                     left: 50%;
                                     transform: translateX(-50%);
                                     transition: all 0.15s ease;
@@ -628,10 +628,10 @@ function createLoopStation() {
                             </div>
                             <label style="
                                 color: rgba(255,255,255,0.8);
-                                font-size: 9px;
+                                font-size: 8px;
                                 font-weight: bold;
                                 text-transform: uppercase;
-                                margin-top: 6px;
+                                margin-top: 4px;
                                 letter-spacing: 0.5px;
                             ">LENGTH</label>
                         </div>
