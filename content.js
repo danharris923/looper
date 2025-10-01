@@ -25,11 +25,36 @@ class VideoLooper {
             this.crossfadeGainA = this.audioContext.createGain();
             this.crossfadeGainB = this.audioContext.createGain();
 
+            // Buffer for edge bleed playback
+            this.edgeBleedBuffer = null;
+            this.edgeBleedSource = null;
+
             // Connect audio graph for crossfading
             this.sourceNode.connect(this.gainNode);
             this.gainNode.connect(this.audioContext.destination);
         } catch (e) {
             console.warn('Web Audio setup failed, using basic looping');
+        }
+    }
+
+    async captureEdgeBleed() {
+        if (!this.audioContext || !this.state.activeMedia) return;
+
+        try {
+            // Calculate the section we need to capture from point A
+            const bleedDuration = this.state.crossfadeDuration;
+            const startTime = this.state.pointA;
+
+            // Create offline context to render the edge audio
+            const sampleRate = this.audioContext.sampleRate;
+            const offlineContext = new OfflineAudioContext(2, sampleRate * bleedDuration, sampleRate);
+
+            // We'll capture this during actual playback instead of pre-rendering
+            // Store the current position to capture from
+            this.edgeBleedCapturePoint = startTime;
+
+        } catch (e) {
+            console.warn('Edge bleed capture failed:', e);
         }
     }
 
@@ -85,22 +110,34 @@ class VideoLooper {
         const now = this.audioContext.currentTime;
         const fadeDuration = this.state.crossfadeDuration;
 
-        // Schedule crossfade: fade out current, fade in from start
-        const currentGain = this.gainNode.gain.value;
+        // Edge bleed technique: play beginning of loop while fading out end
+        // Create a buffer source for the "bleed" - the beginning snippet
+        const bleedGain = this.audioContext.createGain();
+        bleedGain.connect(this.audioContext.destination);
 
-        // Fade out current position
-        this.gainNode.gain.setValueAtTime(currentGain, now);
+        // Start fading out the current playback
+        this.gainNode.gain.setValueAtTime(1, now);
         this.gainNode.gain.linearRampToValueAtTime(0, now + fadeDuration);
 
-        // After fade out, jump to start and fade in
+        // Simultaneously fade in the "bleed" from point A
+        // We do this by scheduling a seek slightly ahead
+        bleedGain.gain.setValueAtTime(0, now);
+        bleedGain.gain.linearRampToValueAtTime(1, now + fadeDuration);
+
+        // Jump to point A immediately but keep it at zero volume initially
+        // This creates the "overlap" effect
         setTimeout(() => {
             if (this.state.isLooping) {
                 this.state.activeMedia.currentTime = this.state.pointA;
+
+                // Fade back in at point A
+                this.gainNode.gain.cancelScheduledValues(this.audioContext.currentTime);
                 this.gainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
-                this.gainNode.gain.linearRampToValueAtTime(currentGain, this.audioContext.currentTime + fadeDuration);
+                this.gainNode.gain.linearRampToValueAtTime(1, this.audioContext.currentTime + fadeDuration);
+
                 this.isInCrossfade = false;
             }
-        }, fadeDuration * 1000);
+        }, fadeDuration * 500); // Jump halfway through the crossfade for overlap
     }
 
     stopLoop() {
@@ -336,8 +373,83 @@ class DigitalDisplay {
     }
 }
 
+// Parameter persistence
+class ParameterStore {
+    constructor() {
+        this.currentVideoUrl = null;
+        this.parameters = {
+            volume: 50,
+            tempo: 50
+        };
+        this.continuousApplyInterval = null;
+    }
+
+    updateCurrentVideo(videoElement) {
+        const newVideoUrl = window.location.href;
+
+        // Reset parameters when switching videos
+        if (this.currentVideoUrl && this.currentVideoUrl !== newVideoUrl) {
+            this.resetParameters();
+        }
+
+        this.currentVideoUrl = newVideoUrl;
+        this.startContinuousApply(videoElement);
+    }
+
+    resetParameters() {
+        this.parameters = {
+            volume: 50,
+            tempo: 50
+        };
+    }
+
+    setParameter(param, value) {
+        this.parameters[param] = value;
+    }
+
+    getParameter(param) {
+        return this.parameters[param];
+    }
+
+    startContinuousApply(videoElement) {
+        // Clear existing interval
+        if (this.continuousApplyInterval) {
+            clearInterval(this.continuousApplyInterval);
+        }
+
+        // Apply parameters every 100ms to prevent resets
+        this.continuousApplyInterval = setInterval(() => {
+            if (videoElement && !videoElement.paused) {
+                this.applyParameters(videoElement);
+            }
+        }, 100);
+    }
+
+    applyParameters(videoElement) {
+        // Apply volume
+        const targetVolume = this.parameters.volume / 100;
+        if (Math.abs(videoElement.volume - targetVolume) > 0.01) {
+            videoElement.volume = targetVolume;
+        }
+
+        // Apply tempo/playback rate
+        const targetRate = 0.5 + (this.parameters.tempo / 100) * 1.5;
+        if (Math.abs(videoElement.playbackRate - targetRate) > 0.01) {
+            videoElement.playbackRate = targetRate;
+        }
+    }
+
+    stopContinuousApply() {
+        if (this.continuousApplyInterval) {
+            clearInterval(this.continuousApplyInterval);
+            this.continuousApplyInterval = null;
+        }
+    }
+}
+
 // Main extension logic
 let pedalVisible = false;
+let parameterStore = new ParameterStore();
 
 function createLoopStation() {
     if (pedalVisible || document.querySelector('.yt-loop-pedal')) return;
@@ -688,7 +800,7 @@ function createLoopStation() {
                 font-weight: bold;
                 font-size: 12px;
                 box-shadow: 0 1px 4px rgba(0,0,0,0.5);
-            " onclick="document.querySelector('.yt-loop-pedal').remove(); pedalVisible = false;">×</div>
+            " onclick="parameterStore.stopContinuousApply(); document.querySelector('.yt-loop-pedal').remove(); pedalVisible = false;">×</div>
         </div>
     `;
 
@@ -704,6 +816,9 @@ function createLoopStation() {
     // Setup connections
     looper.state.activeMedia = videoEl;
     manip.state.activeMedia = videoEl;
+
+    // Update parameter store with current video
+    parameterStore.updateCurrentVideo(videoEl);
 
     // Initialize audio - only setup one audio context to avoid conflicts
     looper.setupAudioNodes(videoEl).then(() => {
@@ -745,11 +860,14 @@ function createLoopStation() {
 
             if (!skipAudioUpdate) {
                 if (knob.dataset.param === 'vol') {
-                    // Control browser tab volume directly
+                    // Store parameter and apply immediately
+                    parameterStore.setParameter('volume', value);
                     videoEl.volume = value / 100;
                     // Show on display
                     display.updateDisplayText('VOLUME', `${Math.round(value)}%`);
                 } else if (knob.dataset.param === 'tempo') {
+                    // Store parameter and apply immediately
+                    parameterStore.setParameter('tempo', value);
                     const rate = 0.5 + (value / 100) * 1.5;
                     videoEl.playbackRate = rate;
                     // Show on display
@@ -783,8 +901,11 @@ function createLoopStation() {
             isDragging = false;
         });
 
-        // Initialize knob position without triggering audio changes
-        updateKnobRotation(parseFloat(knob.dataset.value), true);
+        // Initialize knob position with stored parameter value
+        const param = knob.dataset.param === 'vol' ? 'volume' : 'tempo';
+        const storedValue = parameterStore.getParameter(param);
+        knob.dataset.value = storedValue;
+        updateKnobRotation(storedValue, true);
     });
 
     // Toggle switch handlers
@@ -929,6 +1050,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (pedalVisible) {
             const pedal = document.querySelector('.yt-loop-pedal');
             if (pedal) {
+                parameterStore.stopContinuousApply();
                 pedal.remove();
                 pedalVisible = false;
             }
