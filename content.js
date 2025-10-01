@@ -19,8 +19,23 @@ class VideoLooper {
 
     async setupAudioNodes(mediaElement) {
         try {
+            // Don't create duplicate audio contexts
+            if (this.audioContext && this.sourceNode) {
+                console.log('Audio already set up, skipping...');
+                return;
+            }
+
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            this.sourceNode = this.audioContext.createMediaElementSource(mediaElement);
+
+            // Check if media element already has a source node attached
+            if (!mediaElement._audioSourceConnected) {
+                this.sourceNode = this.audioContext.createMediaElementSource(mediaElement);
+                mediaElement._audioSourceConnected = true;
+            } else {
+                console.warn('MediaElementSource already exists, using basic looping');
+                return;
+            }
+
             this.gainNode = this.audioContext.createGain();
             this.crossfadeGainA = this.audioContext.createGain();
             this.crossfadeGainB = this.audioContext.createGain();
@@ -33,7 +48,7 @@ class VideoLooper {
             this.sourceNode.connect(this.gainNode);
             this.gainNode.connect(this.audioContext.destination);
         } catch (e) {
-            console.warn('Web Audio setup failed, using basic looping');
+            console.warn('Web Audio setup failed, using basic looping:', e.message);
         }
     }
 
@@ -110,19 +125,10 @@ class VideoLooper {
         const now = this.audioContext.currentTime;
         const fadeDuration = this.state.crossfadeDuration;
 
-        // Edge bleed technique: play beginning of loop while fading out end
-        // Create a buffer source for the "bleed" - the beginning snippet
-        const bleedGain = this.audioContext.createGain();
-        bleedGain.connect(this.audioContext.destination);
-
         // Start fading out the current playback
-        this.gainNode.gain.setValueAtTime(1, now);
+        this.gainNode.gain.cancelScheduledValues(now);
+        this.gainNode.gain.setValueAtTime(this.gainNode.gain.value, now);
         this.gainNode.gain.linearRampToValueAtTime(0, now + fadeDuration);
-
-        // Simultaneously fade in the "bleed" from point A
-        // We do this by scheduling a seek slightly ahead
-        bleedGain.gain.setValueAtTime(0, now);
-        bleedGain.gain.linearRampToValueAtTime(1, now + fadeDuration);
 
         // Jump to point A immediately but keep it at zero volume initially
         // This creates the "overlap" effect
@@ -131,9 +137,10 @@ class VideoLooper {
                 this.state.activeMedia.currentTime = this.state.pointA;
 
                 // Fade back in at point A
-                this.gainNode.gain.cancelScheduledValues(this.audioContext.currentTime);
-                this.gainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
-                this.gainNode.gain.linearRampToValueAtTime(1, this.audioContext.currentTime + fadeDuration);
+                const fadeNow = this.audioContext.currentTime;
+                this.gainNode.gain.cancelScheduledValues(fadeNow);
+                this.gainNode.gain.setValueAtTime(0, fadeNow);
+                this.gainNode.gain.linearRampToValueAtTime(1, fadeNow + fadeDuration);
 
                 this.isInCrossfade = false;
             }
@@ -417,12 +424,15 @@ class ParameterStore {
             clearInterval(this.continuousApplyInterval);
         }
 
-        // Apply parameters every 100ms to prevent resets
+        // Apply parameters initially
+        this.applyParameters(videoElement);
+
+        // Apply parameters every 500ms to prevent resets (reduced frequency to avoid glitching)
         this.continuousApplyInterval = setInterval(() => {
-            if (videoElement && !videoElement.paused) {
+            if (videoElement) {
                 this.applyParameters(videoElement);
             }
-        }, 100);
+        }, 500);
     }
 
     applyParameters(videoElement) {
@@ -432,8 +442,11 @@ class ParameterStore {
             videoElement.volume = targetVolume;
         }
 
-        // Apply tempo/playback rate
-        const targetRate = 0.5 + (this.parameters.tempo / 100) * 1.5;
+        // Apply tempo/playback rate - 50 = 1.0x (noon position)
+        // Range: 0 = 0.5x, 50 = 1.0x, 100 = 2.0x
+        const targetRate = this.parameters.tempo <= 50
+            ? 0.5 + (this.parameters.tempo / 50) * 0.5  // 0-50 maps to 0.5-1.0
+            : 1.0 + ((this.parameters.tempo - 50) / 50) * 1.0;  // 50-100 maps to 1.0-2.0
         if (Math.abs(videoElement.playbackRate - targetRate) > 0.01) {
             videoElement.playbackRate = targetRate;
         }
@@ -868,7 +881,9 @@ function createLoopStation() {
                 } else if (knob.dataset.param === 'tempo') {
                     // Store parameter and apply immediately
                     parameterStore.setParameter('tempo', value);
-                    const rate = 0.5 + (value / 100) * 1.5;
+                    const rate = value <= 50
+                        ? 0.5 + (value / 50) * 0.5  // 0-50 maps to 0.5-1.0
+                        : 1.0 + ((value - 50) / 50) * 1.0;  // 50-100 maps to 1.0-2.0
                     videoEl.playbackRate = rate;
                     // Show on display
                     display.updateDisplayText('TEMPO', `${rate.toFixed(2)}x`);
