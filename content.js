@@ -95,27 +95,30 @@ class VideoLooper {
         this.state.activeMedia.currentTime = this.state.pointA;
         this.state.activeMedia.play();
 
-        const checkLoop = () => {
+        // Use timeupdate event instead of requestAnimationFrame for more reliable looping
+        const handleTimeUpdate = () => {
             if (!this.state.isLooping) return;
 
             const currentTime = this.state.activeMedia.currentTime;
-            const loopLength = this.state.pointB - this.state.pointA;
-            const crossfadeStart = this.state.pointB - this.state.crossfadeDuration;
 
-            // Start crossfade when approaching point B
-            if (currentTime >= crossfadeStart && currentTime < this.state.pointB && !this.isInCrossfade) {
-                this.startCrossfade();
-            }
-
-            // Hard cut if we somehow pass point B without crossfading
-            if (currentTime >= this.state.pointB) {
+            // Check if we've reached or passed point B
+            if (currentTime >= this.state.pointB || currentTime < this.state.pointA) {
                 this.state.activeMedia.currentTime = this.state.pointA;
-                this.isInCrossfade = false;
+                console.log(`Looped back to A: ${this.state.pointA.toFixed(3)}s`);
             }
 
-            requestAnimationFrame(checkLoop);
+            // If we have audio context, try crossfade for smoother looping
+            if (this.audioContext && !this.isInCrossfade) {
+                const crossfadeStart = this.state.pointB - this.state.crossfadeDuration;
+                if (currentTime >= crossfadeStart && currentTime < this.state.pointB) {
+                    this.startCrossfade();
+                }
+            }
         };
-        checkLoop();
+
+        // Store the handler so we can remove it later
+        this.loopHandler = handleTimeUpdate;
+        this.state.activeMedia.addEventListener('timeupdate', handleTimeUpdate);
     }
 
     startCrossfade() {
@@ -150,6 +153,13 @@ class VideoLooper {
     stopLoop() {
         this.state.isLooping = false;
         this.isInCrossfade = false;
+
+        // Remove the event listener
+        if (this.loopHandler && this.state.activeMedia) {
+            this.state.activeMedia.removeEventListener('timeupdate', this.loopHandler);
+            this.loopHandler = null;
+        }
+
         console.log('Loop stopped');
     }
 
