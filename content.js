@@ -9,6 +9,7 @@ class VideoLooper {
             playbackRate: 1.0,
             crossfadeDuration: 0.03 // 30ms crossfade
         };
+        this.latencyCompensation = 0.15; // 150ms compensation for reaction time
         this.audioContext = null;
         this.sourceNode = null;
         this.gainNode = null;
@@ -75,15 +76,17 @@ class VideoLooper {
 
     setPointA() {
         if (!this.state.activeMedia) return;
-        this.state.pointA = this.state.activeMedia.currentTime;
-        console.log(`Point A: ${this.state.pointA.toFixed(3)}s`);
+        // Apply latency compensation - subtract reaction time
+        this.state.pointA = Math.max(0, this.state.activeMedia.currentTime - this.latencyCompensation);
+        console.log(`Point A: ${this.state.pointA.toFixed(3)}s (compensated)`);
     }
 
     setPointB() {
         if (!this.state.activeMedia || this.state.pointA === null) return;
-        this.state.pointB = this.state.activeMedia.currentTime;
+        // Apply latency compensation - subtract reaction time
+        this.state.pointB = this.state.activeMedia.currentTime - this.latencyCompensation;
         if (this.state.pointB > this.state.pointA) {
-            console.log(`Point B: ${this.state.pointB.toFixed(3)}s`);
+            console.log(`Point B: ${this.state.pointB.toFixed(3)}s (compensated)`);
             this.startLoop();
         }
     }
@@ -997,6 +1000,32 @@ function createLoopStation() {
                     </div>
                 </div>
 
+                <!-- Latency Compensation Toggle -->
+                <div style="margin-bottom: 15px;">
+                    <label style="color: rgba(255,255,255,0.9); font-size: 10px; font-weight: bold; display: block; margin-bottom: 5px;">LATENCY COMP (150ms)</label>
+                    <div class="menu-toggle" data-setting="latency" style="
+                        position: relative;
+                        width: 50px;
+                        height: 26px;
+                        background: #ff3030;
+                        border-radius: 13px;
+                        border: 2px solid #000;
+                        cursor: pointer;
+                    ">
+                        <div class="menu-toggle-handle" style="
+                            position: absolute;
+                            width: 18px;
+                            height: 18px;
+                            background: linear-gradient(135deg, #f0f0f0 0%, #d0d0d0 100%);
+                            border-radius: 50%;
+                            top: 2px;
+                            left: 26px;
+                            transition: all 0.2s ease;
+                            box-shadow: 0 2px 4px rgba(0,0,0,0.6);
+                        "></div>
+                    </div>
+                </div>
+
                 <!-- 5-Band EQ -->
                 <div style="margin-bottom: 15px;">
                     <label style="color: rgba(255,255,255,0.9); font-size: 10px; font-weight: bold; display: block; margin-bottom: 8px;">5-BAND EQ</label>
@@ -1069,18 +1098,49 @@ function createLoopStation() {
                         font-size: 10px;
                         margin-bottom: 8px;
                     ">SAVE CURRENT LOOP</button>
-                    <select id="bookmarkList" style="
-                        width: 100%;
-                        padding: 6px;
-                        background: #1a0504;
-                        border: 1px solid #000;
-                        border-radius: 4px;
-                        color: #ff3030;
-                        font-size: 9px;
-                        font-weight: bold;
-                    ">
-                        <option value="">Select bookmark...</option>
-                    </select>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <select id="bookmarkList" style="
+                            flex: 1;
+                            padding: 6px;
+                            background: #1a0504;
+                            border: 1px solid #000;
+                            border-radius: 4px;
+                            color: #ff3030;
+                            font-size: 9px;
+                            font-weight: bold;
+                        ">
+                            <option value="">Select bookmark...</option>
+                        </select>
+                        <button id="deleteBookmark" style="
+                            width: 30px;
+                            height: 30px;
+                            background: #2a0a08;
+                            border: 1px solid #000;
+                            border-radius: 4px;
+                            color: #ff3030;
+                            cursor: pointer;
+                            font-weight: bold;
+                            font-size: 14px;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            padding: 0;
+                        ">🗑</button>
+                    </div>
+                </div>
+
+                <!-- Build Info -->
+                <div style="
+                    margin-top: 20px;
+                    padding-top: 15px;
+                    border-top: 1px solid rgba(255,255,255,0.1);
+                    text-align: center;
+                ">
+                    <span style="
+                        color: rgba(255,255,255,0.5);
+                        font-size: 8px;
+                        font-weight: normal;
+                    ">Build: ${new Date().toISOString().replace('T', ' ').substring(0, 19)} UTC</span>
                 </div>
             </div>
         </div>
@@ -1374,6 +1434,27 @@ function createLoopStation() {
         }
     });
 
+    // Latency Compensation Toggle Handler
+    const latencyToggle = document.querySelector('.menu-toggle[data-setting="latency"]');
+    const latencyHandle = latencyToggle.querySelector('.menu-toggle-handle');
+    let latencyEnabled = true; // Enabled by default
+
+    latencyToggle.addEventListener('click', () => {
+        latencyEnabled = !latencyEnabled;
+        if (latencyEnabled) {
+            latencyHandle.style.left = '26px';
+            latencyToggle.style.background = '#ff3030';
+            looper.latencyCompensation = 0.15;
+            display.updateDisplayText('LATENCY', 'ON');
+        } else {
+            latencyHandle.style.left = '2px';
+            latencyToggle.style.background = '#1a0504';
+            looper.latencyCompensation = 0;
+            display.updateDisplayText('LATENCY', 'OFF');
+        }
+        setTimeout(() => display.showLoopInfo(looper), 2000);
+    });
+
     // EQ Band Setup and Handlers
     const eqBands = [60, 250, 1000, 4000, 16000];
     const eqSliders = document.querySelectorAll('.eq-slider');
@@ -1515,7 +1596,7 @@ function createLoopStation() {
         bookmarks.forEach((bookmark, index) => {
             const option = document.createElement('option');
             option.value = index;
-            option.textContent = `${bookmark.name} (${bookmark.url.substring(0, 30)}...)`;
+            option.textContent = bookmark.name;
             bookmarkList.appendChild(option);
         });
     }
@@ -1527,8 +1608,13 @@ function createLoopStation() {
             return;
         }
 
+        // Get video title from YouTube page
+        const videoTitle = document.querySelector('h1.ytd-watch-metadata yt-formatted-string')?.textContent?.trim()
+                        || document.querySelector('h1.title')?.textContent?.trim()
+                        || `Loop ${bookmarks.length + 1}`;
+
         const bookmark = {
-            name: `Loop ${bookmarks.length + 1}`,
+            name: videoTitle,
             url: window.location.href,
             pointA: looper.state.pointA,
             pointB: looper.state.pointB,
@@ -1541,7 +1627,7 @@ function createLoopStation() {
         localStorage.setItem('ytLoopStationBookmarks', JSON.stringify(bookmarks));
         updateBookmarkList();
 
-        display.updateDisplayText('SAVED', `BOOKMARK ${bookmarks.length}`);
+        display.updateDisplayText('SAVED', videoTitle.substring(0, 12));
         setTimeout(() => display.showLoopInfo(looper), 2000);
     });
 
@@ -1554,8 +1640,14 @@ function createLoopStation() {
 
         // Check if same video
         if (bookmark.url !== window.location.href) {
-            display.updateDisplayText('ERROR', 'DIFF VIDEO');
-            setTimeout(() => display.showLoopInfo(looper), 2000);
+            // Store pending bookmark index and navigate to video
+            localStorage.setItem('ytLoopStationPendingBookmark', index);
+            display.updateDisplayText('LOADING', 'VIDEO...');
+
+            // Navigate to the bookmarked video
+            setTimeout(() => {
+                window.location.href = bookmark.url;
+            }, 500);
             return;
         }
 
@@ -1572,11 +1664,44 @@ function createLoopStation() {
             : 1.0 + ((bookmark.tempo - 50) / 50) * 1.0;
         videoEl.playbackRate = rate;
 
-        display.updateDisplayText('LOADED', `BOOKMARK ${index + 1}`);
+        display.updateDisplayText('LOADED', bookmark.name.substring(0, 12));
         setTimeout(() => display.showLoopInfo(looper), 2000);
     });
 
     updateBookmarkList();
+
+    // Check for pending bookmark and auto-load it
+    const pendingBookmarkIndex = localStorage.getItem('ytLoopStationPendingBookmark');
+    if (pendingBookmarkIndex !== null) {
+        localStorage.removeItem('ytLoopStationPendingBookmark');
+
+        const index = parseInt(pendingBookmarkIndex);
+        const bookmark = bookmarks[index];
+
+        if (bookmark && bookmark.url === window.location.href) {
+            // Wait a bit for video to be ready
+            setTimeout(() => {
+                // Load bookmark settings
+                looper.state.pointA = bookmark.pointA;
+                looper.state.pointB = bookmark.pointB;
+                parameterStore.setParameter('volume', bookmark.volume);
+                parameterStore.setParameter('tempo', bookmark.tempo);
+
+                // Apply settings
+                videoEl.volume = bookmark.volume / 100;
+                const rate = bookmark.tempo <= 50
+                    ? 0.5 + (bookmark.tempo / 50) * 0.5
+                    : 1.0 + ((bookmark.tempo - 50) / 50) * 1.0;
+                videoEl.playbackRate = rate;
+
+                // Set the video time and start playing
+                videoEl.currentTime = bookmark.pointA;
+
+                display.updateDisplayText('AUTO LOAD', bookmark.name.substring(0, 12));
+                setTimeout(() => display.showLoopInfo(looper), 2000);
+            }, 1000);
+        }
+    }
 }
 
 // Setup video observer to detect video elements on any page (including Shorts)
