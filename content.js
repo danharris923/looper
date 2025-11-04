@@ -1,3 +1,10 @@
+// Debug flag - set to true for development logging
+const DEBUG = false;
+
+function debugLog(...args) {
+    if (DEBUG) console.log('[YT Loop Station]', ...args);
+}
+
 // Enhanced VideoLooper with crossfade looping
 class VideoLooper {
     constructor() {
@@ -16,17 +23,43 @@ class VideoLooper {
         this.crossfadeGainA = null;
         this.crossfadeGainB = null;
         this.isInCrossfade = false;
+        // Cleanup tracking
+        this.timeouts = [];
+        this.loopHandler = null;
+    }
+
+    // Tracked setTimeout for proper cleanup
+    setTrackedTimeout(callback, delay) {
+        const id = setTimeout(() => {
+            callback();
+            // Remove from tracking
+            this.timeouts = this.timeouts.filter(t => t !== id);
+        }, delay);
+        this.timeouts.push(id);
+        return id;
+    }
+
+    // Clear all tracked timeouts
+    clearAllTimeouts() {
+        this.timeouts.forEach(id => clearTimeout(id));
+        this.timeouts = [];
     }
 
     async setupAudioNodes(mediaElement) {
         try {
             // Don't create duplicate audio contexts
             if (this.audioContext && this.sourceNode) {
-                console.log('Audio already set up, skipping...');
+                debugLog('Audio already set up, skipping...');
                 return;
             }
 
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+            // Handle autoplay policy - resume context if suspended
+            if (this.audioContext.state === 'suspended') {
+                debugLog('AudioContext suspended, will resume on user interaction');
+                // Will be resumed automatically when user interacts with video
+            }
 
             // Check if media element already has a source node attached
             if (!mediaElement._audioSourceConnected) {
@@ -78,7 +111,7 @@ class VideoLooper {
         if (!this.state.activeMedia) return;
         // Apply latency compensation - subtract reaction time
         this.state.pointA = Math.max(0, this.state.activeMedia.currentTime - this.latencyCompensation);
-        console.log(`Point A: ${this.state.pointA.toFixed(3)}s (compensated)`);
+        debugLog(`Point A: ${this.state.pointA.toFixed(3)}s (compensated)`);
     }
 
     setPointB() {
@@ -86,7 +119,7 @@ class VideoLooper {
         // Apply latency compensation - subtract reaction time
         this.state.pointB = this.state.activeMedia.currentTime - this.latencyCompensation;
         if (this.state.pointB > this.state.pointA) {
-            console.log(`Point B: ${this.state.pointB.toFixed(3)}s (compensated)`);
+            debugLog(`Point B: ${this.state.pointB.toFixed(3)}s (compensated)`);
             this.startLoop();
         }
     }
@@ -107,7 +140,7 @@ class VideoLooper {
             // Check if we've reached or passed point B
             if (currentTime >= this.state.pointB || currentTime < this.state.pointA) {
                 this.state.activeMedia.currentTime = this.state.pointA;
-                console.log(`Looped back to A: ${this.state.pointA.toFixed(3)}s`);
+                debugLog(`Looped back to A: ${this.state.pointA.toFixed(3)}s`);
             }
 
             // If we have audio context, try crossfade for smoother looping
@@ -138,7 +171,7 @@ class VideoLooper {
 
         // Jump to point A immediately but keep it at zero volume initially
         // This creates the "overlap" effect
-        setTimeout(() => {
+        this.setTrackedTimeout(() => {
             if (this.state.isLooping) {
                 this.state.activeMedia.currentTime = this.state.pointA;
 
@@ -163,14 +196,17 @@ class VideoLooper {
             this.loopHandler = null;
         }
 
-        console.log('Loop stopped');
+        // Clear all tracked timeouts
+        this.clearAllTimeouts();
+
+        debugLog('Loop stopped');
     }
 
     adjustPlaybackRate(delta) {
         if (!this.state.activeMedia) return;
         this.state.playbackRate = Math.max(0.25, Math.min(2.0, this.state.playbackRate + delta));
         this.state.activeMedia.playbackRate = this.state.playbackRate;
-        console.log(`Playback rate: ${this.state.playbackRate.toFixed(2)}x`);
+        debugLog(`Playback rate: ${this.state.playbackRate.toFixed(2)}x`);
     }
 
     jogPointA(deltaSeconds) {
@@ -179,17 +215,20 @@ class VideoLooper {
         if (this.state.pointB && this.state.pointA >= this.state.pointB) {
             this.state.pointA = this.state.pointB - 0.1;
         }
-        console.log(`Point A jogged: ${this.state.pointA.toFixed(3)}s`);
+        debugLog(`Point A jogged: ${this.state.pointA.toFixed(3)}s`);
     }
 
     jogPointB(deltaSeconds) {
         if (this.state.pointB === null) return;
-        const maxTime = this.state.activeMedia ? this.state.activeMedia.duration : Infinity;
+        // Validate duration is finite (not NaN or Infinity for live streams)
+        const maxTime = this.state.activeMedia && isFinite(this.state.activeMedia.duration)
+            ? this.state.activeMedia.duration
+            : Infinity;
         this.state.pointB = Math.min(maxTime, this.state.pointB + deltaSeconds);
         if (this.state.pointA && this.state.pointB <= this.state.pointA) {
             this.state.pointB = this.state.pointA + 0.1;
         }
-        console.log(`Point B jogged: ${this.state.pointB.toFixed(3)}s`);
+        debugLog(`Point B jogged: ${this.state.pointB.toFixed(3)}s`);
     }
 }
 
@@ -246,14 +285,14 @@ class HighQualityAudioEngine {
                 .connect(this.analyser)
                 .connect(this.audioContext.destination);
 
-            console.log('High-quality audio engine initialized');
+            debugLog('High-quality audio engine initialized');
         } catch (e) {
             console.warn('Audio context failed:', e);
         }
     }
 
     setVolume(value) {
-        if (!this.gainNode) return;
+        if (!this.gainNode || !this.audioContext) return;
         const gain = value / 100;
         this.gainNode.gain.setValueAtTime(gain, this.audioContext.currentTime);
     }
@@ -325,11 +364,13 @@ class LoopManipulator {
         const currentLength = looper.state.pointB - looper.state.pointA;
         looper.state.pointB = looper.state.pointA + (currentLength * 2);
 
-        if (this.state.activeMedia && looper.state.pointB > this.state.activeMedia.duration) {
+        // Validate duration is finite
+        if (this.state.activeMedia && isFinite(this.state.activeMedia.duration) &&
+            looper.state.pointB > this.state.activeMedia.duration) {
             looper.state.pointB = this.state.activeMedia.duration;
         }
 
-        console.log(`Loop doubled: ${currentLength.toFixed(2)}s → ${(looper.state.pointB - looper.state.pointA).toFixed(2)}s`);
+        debugLog(`Loop doubled: ${currentLength.toFixed(2)}s → ${(looper.state.pointB - looper.state.pointA).toFixed(2)}s`);
         if (looper.state.isLooping) looper.startLoop();
     }
 
@@ -341,7 +382,7 @@ class LoopManipulator {
         if (newLength < 0.1) return;
 
         looper.state.pointB = looper.state.pointA + newLength;
-        console.log(`Loop halved: ${currentLength.toFixed(2)}s → ${newLength.toFixed(2)}s`);
+        debugLog(`Loop halved: ${currentLength.toFixed(2)}s → ${newLength.toFixed(2)}s`);
         if (looper.state.isLooping) looper.startLoop();
     }
 
@@ -354,8 +395,11 @@ class LoopManipulator {
         const newA = looper.state.pointA + jumpAmount;
         const newB = looper.state.pointB + jumpAmount;
 
-        // Check bounds
-        if (newA >= 0 && this.state.activeMedia && newB <= this.state.activeMedia.duration) {
+        // Check bounds with duration validation
+        const maxTime = this.state.activeMedia && isFinite(this.state.activeMedia.duration)
+            ? this.state.activeMedia.duration
+            : Infinity;
+        if (newA >= 0 && newB <= maxTime) {
             looper.state.pointA = newA;
             looper.state.pointB = newB;
 
@@ -363,7 +407,7 @@ class LoopManipulator {
                 looper.state.activeMedia.currentTime = looper.state.pointA;
             }
 
-            console.log(`Section jump: A=${looper.state.pointA.toFixed(2)}s, B=${looper.state.pointB.toFixed(2)}s`);
+            debugLog(`Section jump: A=${looper.state.pointA.toFixed(2)}s, B=${looper.state.pointB.toFixed(2)}s`);
         }
     }
 }
@@ -390,20 +434,20 @@ class DigitalDisplay {
                 <rect width="300" height="80" fill="#200808" stroke="#4a1a17" stroke-width="3" rx="8"/>
                 <text id="display-line1" x="150" y="30"
                     font-family="Courier New, monospace"
-                    font-size="24"
+                    font-size="18"
                     font-weight="bold"
                     fill="#ff3030"
                     text-anchor="middle"
                     filter="url(#glow)"
-                    letter-spacing="8">READY</text>
+                    letter-spacing="4">READY</text>
                 <text id="display-line2" x="150" y="60"
                     font-family="Courier New, monospace"
-                    font-size="24"
+                    font-size="18"
                     font-weight="bold"
                     fill="#ff3030"
                     text-anchor="middle"
                     filter="url(#glow)"
-                    letter-spacing="8">--------</text>
+                    letter-spacing="4">--------</text>
             </svg>
         `;
     }
@@ -430,12 +474,12 @@ class DigitalDisplay {
         if (looper.state.pointA !== null && looper.state.pointB !== null) {
             const loopLength = looper.state.pointB - looper.state.pointA;
             this.updateDisplayText(
-                `LOOP ${this.formatTime(looper.state.pointA)}`,
-                `LEN ${loopLength.toFixed(2)}s`
+                `A ${this.formatTime(looper.state.pointA)}  B ${this.formatTime(looper.state.pointB)}`,
+                `LEN ${this.formatTime(loopLength)}`
             );
         } else if (looper.state.pointA !== null) {
             this.updateDisplayText(
-                `A: ${this.formatTime(looper.state.pointA)}`,
+                `A ${this.formatTime(looper.state.pointA)}`,
                 'SET B'
             );
         } else {
@@ -514,8 +558,12 @@ class ParameterStore {
 
         // Apply parameters every 500ms to prevent resets (reduced frequency to avoid glitching)
         this.continuousApplyInterval = setInterval(() => {
-            if (videoElement) {
+            // Check if videoElement still exists and is connected to DOM
+            if (videoElement && videoElement.isConnected) {
                 this.applyParameters(videoElement);
+            } else {
+                // Clean up if video element is removed
+                this.stopContinuousApply();
             }
         }, 500);
     }
@@ -572,6 +620,7 @@ class ParameterStore {
 let pedalVisible = false;
 let parameterStore = new ParameterStore();
 let videoObserver = null;
+let cleanupFunction = null; // Store cleanup function for proper teardown
 
 function findVideo() {
     // Find any video element on the page
@@ -583,7 +632,7 @@ function createLoopStation() {
 
     const videoEl = findVideo();
     if (!videoEl) {
-        console.log('No video found on page');
+        debugLog('No video found on page');
         return;
     }
 
@@ -1162,13 +1211,13 @@ function createLoopStation() {
     // Enable pitch preservation immediately (native HTML5 feature)
     if (videoEl && typeof videoEl.preservesPitch !== 'undefined') {
         videoEl.preservesPitch = true;
-        console.log('Pitch preservation enabled');
+        debugLog('Pitch preservation enabled');
     } else if (videoEl && typeof videoEl.mozPreservesPitch !== 'undefined') {
         videoEl.mozPreservesPitch = true;
-        console.log('Pitch preservation enabled (Firefox)');
+        debugLog('Pitch preservation enabled (Firefox)');
     } else if (videoEl && typeof videoEl.webkitPreservesPitch !== 'undefined') {
         videoEl.webkitPreservesPitch = true;
-        console.log('Pitch preservation enabled (Safari)');
+        debugLog('Pitch preservation enabled (Safari)');
     }
 
     // Update parameter store with current video and audio engine
@@ -1176,13 +1225,17 @@ function createLoopStation() {
 
     // Initialize audio - only setup one audio context to avoid conflicts
     looper.setupAudioNodes(videoEl).then(() => {
-        console.log('Loop station initialized');
+        debugLog('Loop station initialized');
     }).catch(e => {
         console.warn('Audio setup skipped:', e);
     });
 
-    // Initialize display
+    // Initialize display - CRITICAL: Check for null to prevent crashes
     const displayContainer = document.getElementById('displayContainer');
+    if (!displayContainer) {
+        console.error('Display container not found - cannot initialize display');
+        return;
+    }
     displayContainer.innerHTML = display.createDisplaySVG();
 
     // Pedal state
@@ -1191,17 +1244,25 @@ function createLoopStation() {
         playing: false
     };
 
-    // Animation loop
+    // Animation loop with proper cleanup
+    let animationFrameId = null;
     function renderLoop() {
         if (document.querySelector('.yt-loop-pedal')) {
             display.showLoopInfo(looper);
-            requestAnimationFrame(renderLoop);
+            animationFrameId = requestAnimationFrame(renderLoop);
+        } else {
+            // Stop the animation loop when pedal is removed
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = null;
+            }
         }
     }
     renderLoop();
 
-    // Knob handlers
+    // Knob handlers with proper cleanup tracking
     let knobDisplayTimeout = null;
+    const eventListeners = []; // Track all event listeners for cleanup
 
     document.querySelectorAll('.large-knob').forEach(knob => {
         let isDragging = false;
@@ -1245,24 +1306,36 @@ function createLoopStation() {
             }
         }
 
-        knob.addEventListener('mousedown', (e) => {
+        const mouseDownHandler = (e) => {
             isDragging = true;
             startY = e.clientY;
-            startValue = parseFloat(knob.dataset.value);
+            // Validate dataset value with default fallback
+            startValue = parseFloat(knob.dataset.value) || 50;
             e.preventDefault();
-        });
+        };
 
-        document.addEventListener('mousemove', (e) => {
+        const mouseMoveHandler = (e) => {
             if (!isDragging) return;
             const deltaY = startY - e.clientY;
             const newValue = Math.max(0, Math.min(100, startValue + deltaY * 0.5));
             knob.dataset.value = newValue;
             updateKnobRotation(newValue);
-        });
+        };
 
-        document.addEventListener('mouseup', () => {
+        const mouseUpHandler = () => {
             isDragging = false;
-        });
+        };
+
+        knob.addEventListener('mousedown', mouseDownHandler);
+        document.addEventListener('mousemove', mouseMoveHandler);
+        document.addEventListener('mouseup', mouseUpHandler);
+
+        // Track for cleanup
+        eventListeners.push(
+            { element: knob, event: 'mousedown', handler: mouseDownHandler },
+            { element: document, event: 'mousemove', handler: mouseMoveHandler },
+            { element: document, event: 'mouseup', handler: mouseUpHandler }
+        );
 
         // Initialize knob position with stored parameter value
         const param = knob.dataset.param === 'vol' ? 'volume' : 'tempo';
@@ -1509,7 +1582,7 @@ function createLoopStation() {
                 .connect(audio.analyser)
                 .connect(audio.audioContext.destination);
 
-            console.log('5-band EQ initialized');
+            debugLog('5-band EQ initialized');
         } catch (e) {
             console.warn('EQ setup failed:', e);
         }
@@ -1702,6 +1775,37 @@ function createLoopStation() {
             }, 1000);
         }
     }
+
+    // Store cleanup function for proper teardown
+    cleanupFunction = () => {
+        // Stop loop and clear timeouts
+        if (looper) {
+            looper.stopLoop();
+        }
+
+        // Stop parameter store interval
+        if (parameterStore) {
+            parameterStore.stopContinuousApply();
+        }
+
+        // Cancel animation frame
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+            animationFrameId = null;
+        }
+
+        // Remove all tracked event listeners
+        eventListeners.forEach(({ element, event, handler }) => {
+            element.removeEventListener(event, handler);
+        });
+
+        // Clear any pending timeouts
+        if (knobDisplayTimeout) {
+            clearTimeout(knobDisplayTimeout);
+        }
+
+        debugLog('Cleanup completed');
+    };
 }
 
 // Setup video observer to detect video elements on any page (including Shorts)
@@ -1716,18 +1820,22 @@ function setupVideoObserver() {
         if (pedalVisible) {
             const currentVideo = findVideo();
             if (currentVideo && !currentVideo._loopStationConnected) {
-                console.log('New video detected, updating loop station connection');
+                debugLog('New video detected, updating loop station connection');
                 // Mark video as connected
                 currentVideo._loopStationConnected = true;
             }
         }
     });
 
-    // Observe the entire document for added nodes
-    videoObserver.observe(document.body, {
-        childList: true,
-        subtree: true
-    });
+    // Observe the entire document for added nodes - check body exists
+    if (document.body) {
+        videoObserver.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+    } else {
+        console.warn('document.body not available for MutationObserver');
+    }
 }
 
 // Initialize observer when content script loads
@@ -1737,33 +1845,48 @@ if (document.readyState === 'loading') {
     setupVideoObserver();
 }
 
+// Track if we're currently trying to create loop station (prevent race condition)
+let isAttemptingToCreate = false;
+
 // Listen for extension activation
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'toggle_pedal') {
         if (pedalVisible) {
             const pedal = document.querySelector('.yt-loop-pedal');
             if (pedal) {
-                parameterStore.stopContinuousApply();
+                // Call cleanup function to properly teardown
+                if (cleanupFunction) {
+                    cleanupFunction();
+                    cleanupFunction = null;
+                }
                 pedal.remove();
                 pedalVisible = false;
             }
         } else {
-            // Wait for video to be available if not present
-            let attempts = 0;
-            const maxAttempts = 10;
-            const tryCreateLoopStation = () => {
-                const video = findVideo();
-                if (video) {
-                    createLoopStation();
-                } else if (attempts < maxAttempts) {
-                    attempts++;
-                    setTimeout(tryCreateLoopStation, 200);
-                } else {
-                    console.warn('No video element found after multiple attempts');
-                }
-            };
-            tryCreateLoopStation();
+            // Prevent multiple concurrent creation attempts
+            if (!isAttemptingToCreate) {
+                isAttemptingToCreate = true;
+
+                // Wait for video to be available if not present
+                let attempts = 0;
+                const maxAttempts = 10;
+                const tryCreateLoopStation = () => {
+                    const video = findVideo();
+                    if (video) {
+                        createLoopStation();
+                        isAttemptingToCreate = false;
+                    } else if (attempts < maxAttempts) {
+                        attempts++;
+                        setTimeout(tryCreateLoopStation, 200);
+                    } else {
+                        console.warn('No video element found after multiple attempts');
+                        isAttemptingToCreate = false;
+                    }
+                };
+                tryCreateLoopStation();
+            }
         }
         sendResponse({success: true});
+        return true; // Keep message channel open for async response
     }
 });
