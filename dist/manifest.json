@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YT Loop Station",
-  "version": "1.0.3",
+  "version": "2026.3.27",
   "description": "Precision A/B looping with 30ms crossfade for seamless YouTube playback. Perfect for music practice and language learning.",
   "permissions": ["activeTab"],
   "action": {

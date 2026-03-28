@@ -1,1769 +1,1303 @@
-// Enhanced VideoLooper with crossfade looping
-class VideoLooper {
-    constructor() {
-        this.state = {
-            activeMedia: null,
-            pointA: null,
-            pointB: null,
-            isLooping: false,
-            playbackRate: 1.0,
-            crossfadeDuration: 0.03 // 30ms crossfade
-        };
-        this.latencyCompensation = 0.15; // 150ms compensation for reaction time
-        this.audioContext = null;
-        this.sourceNode = null;
-        this.gainNode = null;
-        this.crossfadeGainA = null;
-        this.crossfadeGainB = null;
-        this.isInCrossfade = false;
-    }
+const DEBUG = false;
 
-    async setupAudioNodes(mediaElement) {
-        try {
-            // Don't create duplicate audio contexts
-            if (this.audioContext && this.sourceNode) {
-                console.log('Audio already set up, skipping...');
-                return;
-            }
-
-            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-
-            // Check if media element already has a source node attached
-            if (!mediaElement._audioSourceConnected) {
-                this.sourceNode = this.audioContext.createMediaElementSource(mediaElement);
-                mediaElement._audioSourceConnected = true;
-            } else {
-                console.warn('MediaElementSource already exists, using basic looping');
-                return;
-            }
-
-            this.gainNode = this.audioContext.createGain();
-            this.crossfadeGainA = this.audioContext.createGain();
-            this.crossfadeGainB = this.audioContext.createGain();
-
-            // Buffer for edge bleed playback
-            this.edgeBleedBuffer = null;
-            this.edgeBleedSource = null;
-
-            // Connect audio graph for crossfading
-            this.sourceNode.connect(this.gainNode);
-            this.gainNode.connect(this.audioContext.destination);
-        } catch (e) {
-            console.warn('Web Audio setup failed, using basic looping:', e.message);
-        }
-    }
-
-    async captureEdgeBleed() {
-        if (!this.audioContext || !this.state.activeMedia) return;
-
-        try {
-            // Calculate the section we need to capture from point A
-            const bleedDuration = this.state.crossfadeDuration;
-            const startTime = this.state.pointA;
-
-            // Create offline context to render the edge audio
-            const sampleRate = this.audioContext.sampleRate;
-            const offlineContext = new OfflineAudioContext(2, sampleRate * bleedDuration, sampleRate);
-
-            // We'll capture this during actual playback instead of pre-rendering
-            // Store the current position to capture from
-            this.edgeBleedCapturePoint = startTime;
-
-        } catch (e) {
-            console.warn('Edge bleed capture failed:', e);
-        }
-    }
-
-    setPointA() {
-        if (!this.state.activeMedia) return;
-        // Apply latency compensation - subtract reaction time
-        this.state.pointA = Math.max(0, this.state.activeMedia.currentTime - this.latencyCompensation);
-        console.log(`Point A: ${this.state.pointA.toFixed(3)}s (compensated)`);
-    }
-
-    setPointB() {
-        if (!this.state.activeMedia || this.state.pointA === null) return;
-        // Apply latency compensation - subtract reaction time
-        this.state.pointB = this.state.activeMedia.currentTime - this.latencyCompensation;
-        if (this.state.pointB > this.state.pointA) {
-            console.log(`Point B: ${this.state.pointB.toFixed(3)}s (compensated)`);
-            this.startLoop();
-        }
-    }
-
-    startLoop() {
-        if (!this.state.activeMedia || this.state.pointA === null || this.state.pointB === null) return;
-
-        this.state.isLooping = true;
-        this.state.activeMedia.currentTime = this.state.pointA;
-        this.state.activeMedia.play();
-
-        // Use timeupdate event instead of requestAnimationFrame for more reliable looping
-        const handleTimeUpdate = () => {
-            if (!this.state.isLooping) return;
-
-            const currentTime = this.state.activeMedia.currentTime;
-
-            // Check if we've reached or passed point B
-            if (currentTime >= this.state.pointB || currentTime < this.state.pointA) {
-                this.state.activeMedia.currentTime = this.state.pointA;
-                console.log(`Looped back to A: ${this.state.pointA.toFixed(3)}s`);
-            }
-
-            // If we have audio context, try crossfade for smoother looping
-            if (this.audioContext && !this.isInCrossfade) {
-                const crossfadeStart = this.state.pointB - this.state.crossfadeDuration;
-                if (currentTime >= crossfadeStart && currentTime < this.state.pointB) {
-                    this.startCrossfade();
-                }
-            }
-        };
-
-        // Store the handler so we can remove it later
-        this.loopHandler = handleTimeUpdate;
-        this.state.activeMedia.addEventListener('timeupdate', handleTimeUpdate);
-    }
-
-    startCrossfade() {
-        if (!this.audioContext || this.isInCrossfade) return;
-
-        this.isInCrossfade = true;
-        const now = this.audioContext.currentTime;
-        const fadeDuration = this.state.crossfadeDuration;
-
-        // Start fading out the current playback
-        this.gainNode.gain.cancelScheduledValues(now);
-        this.gainNode.gain.setValueAtTime(this.gainNode.gain.value, now);
-        this.gainNode.gain.linearRampToValueAtTime(0, now + fadeDuration);
-
-        // Jump to point A immediately but keep it at zero volume initially
-        // This creates the "overlap" effect
-        setTimeout(() => {
-            if (this.state.isLooping) {
-                this.state.activeMedia.currentTime = this.state.pointA;
-
-                // Fade back in at point A
-                const fadeNow = this.audioContext.currentTime;
-                this.gainNode.gain.cancelScheduledValues(fadeNow);
-                this.gainNode.gain.setValueAtTime(0, fadeNow);
-                this.gainNode.gain.linearRampToValueAtTime(1, fadeNow + fadeDuration);
-
-                this.isInCrossfade = false;
-            }
-        }, fadeDuration * 500); // Jump halfway through the crossfade for overlap
-    }
-
-    stopLoop() {
-        this.state.isLooping = false;
-        this.isInCrossfade = false;
-
-        // Remove the event listener
-        if (this.loopHandler && this.state.activeMedia) {
-            this.state.activeMedia.removeEventListener('timeupdate', this.loopHandler);
-            this.loopHandler = null;
-        }
-
-        console.log('Loop stopped');
-    }
-
-    adjustPlaybackRate(delta) {
-        if (!this.state.activeMedia) return;
-        this.state.playbackRate = Math.max(0.25, Math.min(2.0, this.state.playbackRate + delta));
-        this.state.activeMedia.playbackRate = this.state.playbackRate;
-        console.log(`Playback rate: ${this.state.playbackRate.toFixed(2)}x`);
-    }
-
-    jogPointA(deltaSeconds) {
-        if (this.state.pointA === null) return;
-        this.state.pointA = Math.max(0, this.state.pointA + deltaSeconds);
-        if (this.state.pointB && this.state.pointA >= this.state.pointB) {
-            this.state.pointA = this.state.pointB - 0.1;
-        }
-        console.log(`Point A jogged: ${this.state.pointA.toFixed(3)}s`);
-    }
-
-    jogPointB(deltaSeconds) {
-        if (this.state.pointB === null) return;
-        const maxTime = this.state.activeMedia ? this.state.activeMedia.duration : Infinity;
-        this.state.pointB = Math.min(maxTime, this.state.pointB + deltaSeconds);
-        if (this.state.pointA && this.state.pointB <= this.state.pointA) {
-            this.state.pointB = this.state.pointA + 0.1;
-        }
-        console.log(`Point B jogged: ${this.state.pointB.toFixed(3)}s`);
-    }
+function debugLog(...args) {
+  if (DEBUG) console.log('[YT Loop Station]', ...args);
 }
 
-// HighQualityAudioEngine with Enhanced Time Stretching
-class HighQualityAudioEngine {
-    constructor() {
-        this.audioContext = null;
-        this.sourceNode = null;
-        this.gainNode = null;
-        this.analyser = null;
-        this.filters = {};
-        this.compressor = null;
-        this.tempoGainNode = null;
-        this.currentRate = 1.0;
-        this.targetRate = 1.0;
-        this.rateInterpolationActive = false;
-    }
+// --- Utility functions ---
 
-    async setupHighQualityAudio(mediaElement) {
-        try {
-            this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
-                sampleRate: 48000,
-                latencyHint: 'playback'
-            });
-
-            this.sourceNode = this.audioContext.createMediaElementSource(mediaElement);
-            this.gainNode = this.audioContext.createGain();
-            this.tempoGainNode = this.audioContext.createGain();
-            this.compressor = this.audioContext.createDynamicsCompressor();
-            this.analyser = this.audioContext.createAnalyser();
-
-            // EQ filters
-            this.filters.low = this.audioContext.createBiquadFilter();
-            this.filters.low.type = 'lowshelf';
-            this.filters.low.frequency.value = 320;
-
-            this.filters.mid = this.audioContext.createBiquadFilter();
-            this.filters.mid.type = 'peaking';
-            this.filters.mid.frequency.value = 1000;
-            this.filters.mid.Q.value = 0.5;
-
-            this.filters.high = this.audioContext.createBiquadFilter();
-            this.filters.high.type = 'highshelf';
-            this.filters.high.frequency.value = 3200;
-
-            // Connect audio graph with tempo gain for smooth transitions
-            this.sourceNode
-                .connect(this.filters.low)
-                .connect(this.filters.mid)
-                .connect(this.filters.high)
-                .connect(this.tempoGainNode)
-                .connect(this.compressor)
-                .connect(this.gainNode)
-                .connect(this.analyser)
-                .connect(this.audioContext.destination);
-
-            console.log('High-quality audio engine initialized');
-        } catch (e) {
-            console.warn('Audio context failed:', e);
-        }
-    }
-
-    setVolume(value) {
-        if (!this.gainNode) return;
-        const gain = value / 100;
-        this.gainNode.gain.setValueAtTime(gain, this.audioContext.currentTime);
-    }
-
-    // Smooth tempo changes with buffering and crossfading
-    setTempo(rate, mediaElement) {
-        if (!mediaElement || !this.audioContext || !this.tempoGainNode) return;
-
-        this.targetRate = rate;
-
-        // If we're not already interpolating, start the smooth transition
-        if (!this.rateInterpolationActive) {
-            this.rateInterpolationActive = true;
-            this.smoothRateTransition(mediaElement);
-        }
-    }
-
-    smoothRateTransition(mediaElement) {
-        if (!this.rateInterpolationActive) return;
-
-        const now = this.audioContext.currentTime;
-        const rateDiff = this.targetRate - this.currentRate;
-
-        // If we're close enough to target, snap to it
-        if (Math.abs(rateDiff) < 0.01) {
-            this.currentRate = this.targetRate;
-            mediaElement.playbackRate = this.targetRate;
-            this.rateInterpolationActive = false;
-            return;
-        }
-
-        // Smooth interpolation with exponential ease
-        const interpolationSpeed = 0.15; // Adjust for faster/slower transitions
-        this.currentRate += rateDiff * interpolationSpeed;
-
-        // Apply crossfade during rate change to minimize artifacts
-        const fadeTime = 0.05; // 50ms crossfade
-        this.tempoGainNode.gain.cancelScheduledValues(now);
-        this.tempoGainNode.gain.setValueAtTime(this.tempoGainNode.gain.value, now);
-        this.tempoGainNode.gain.linearRampToValueAtTime(0.7, now + fadeTime / 2);
-        this.tempoGainNode.gain.linearRampToValueAtTime(1.0, now + fadeTime);
-
-        // Apply the new rate
-        mediaElement.playbackRate = this.currentRate;
-
-        // Continue interpolating
-        requestAnimationFrame(() => this.smoothRateTransition(mediaElement));
-    }
+function setPreservesPitch(el, value) {
+  if ('preservesPitch' in el) el.preservesPitch = value;
+  else if ('mozPreservesPitch' in el) el.mozPreservesPitch = value;
+  else if ('webkitPreservesPitch' in el) el.webkitPreservesPitch = value;
 }
 
-// LoopManipulator
-class LoopManipulator {
-    constructor() {
-        this.state = {
-            activeMedia: null,
-            originalLoopStart: null,
-            originalLoopEnd: null,
-            snapGrid: 0.1
-        };
-    }
-
-    setLoopPoints(looper) {
-        this.state.originalLoopStart = looper.state.pointA;
-        this.state.originalLoopEnd = looper.state.pointB;
-    }
-
-    doubleLoopLength(looper) {
-        if (!looper.state.pointA || !looper.state.pointB) return;
-        const currentLength = looper.state.pointB - looper.state.pointA;
-        looper.state.pointB = looper.state.pointA + (currentLength * 2);
-
-        if (this.state.activeMedia && looper.state.pointB > this.state.activeMedia.duration) {
-            looper.state.pointB = this.state.activeMedia.duration;
-        }
-
-        console.log(`Loop doubled: ${currentLength.toFixed(2)}s → ${(looper.state.pointB - looper.state.pointA).toFixed(2)}s`);
-        if (looper.state.isLooping) looper.startLoop();
-    }
-
-    halfLoopLength(looper) {
-        if (!looper.state.pointA || !looper.state.pointB) return;
-        const currentLength = looper.state.pointB - looper.state.pointA;
-        const newLength = currentLength / 2;
-
-        if (newLength < 0.1) return;
-
-        looper.state.pointB = looper.state.pointA + newLength;
-        console.log(`Loop halved: ${currentLength.toFixed(2)}s → ${newLength.toFixed(2)}s`);
-        if (looper.state.isLooping) looper.startLoop();
-    }
-
-    jumpSection(looper, direction) {
-        if (!looper.state.pointA || !looper.state.pointB) return;
-
-        const loopLength = looper.state.pointB - looper.state.pointA;
-        const jumpAmount = loopLength * direction;
-
-        const newA = looper.state.pointA + jumpAmount;
-        const newB = looper.state.pointB + jumpAmount;
-
-        // Check bounds
-        if (newA >= 0 && this.state.activeMedia && newB <= this.state.activeMedia.duration) {
-            looper.state.pointA = newA;
-            looper.state.pointB = newB;
-
-            if (looper.state.isLooping) {
-                looper.state.activeMedia.currentTime = looper.state.pointA;
-            }
-
-            console.log(`Section jump: A=${looper.state.pointA.toFixed(2)}s, B=${looper.state.pointB.toFixed(2)}s`);
-        }
-    }
+function tempoToRate(tempo) {
+  return tempo <= 50
+    ? 0.5 + (tempo / 50) * 0.5
+    : 1.0 + ((tempo - 50) / 50) * 1.0;
 }
 
-// DigitalDisplay
-class DigitalDisplay {
-    constructor() {
-        this.displayText = 'READY';
-        this.secondaryText = '--------';
-    }
-
-    createDisplaySVG() {
-        return `
-            <svg width="100%" height="80" viewBox="0 0 300 80" xmlns="http://www.w3.org/2000/svg">
-                <defs>
-                    <filter id="glow">
-                        <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
-                        <feMerge>
-                            <feMergeNode in="coloredBlur"/>
-                            <feMergeNode in="SourceGraphic"/>
-                        </feMerge>
-                    </filter>
-                </defs>
-                <rect width="300" height="80" fill="#200808" stroke="#4a1a17" stroke-width="3" rx="8"/>
-                <text id="display-line1" x="150" y="30"
-                    font-family="Courier New, monospace"
-                    font-size="24"
-                    font-weight="bold"
-                    fill="#ff3030"
-                    text-anchor="middle"
-                    filter="url(#glow)"
-                    letter-spacing="8">READY</text>
-                <text id="display-line2" x="150" y="60"
-                    font-family="Courier New, monospace"
-                    font-size="24"
-                    font-weight="bold"
-                    fill="#ff3030"
-                    text-anchor="middle"
-                    filter="url(#glow)"
-                    letter-spacing="8">--------</text>
-            </svg>
-        `;
-    }
-
-    updateDisplayText(line1 = null, line2 = null) {
-        if (line1 !== null) this.displayText = line1;
-        if (line2 !== null) this.secondaryText = line2;
-
-        const line1Element = document.getElementById('display-line1');
-        const line2Element = document.getElementById('display-line2');
-
-        if (line1Element) line1Element.textContent = this.displayText;
-        if (line2Element) line2Element.textContent = this.secondaryText;
-    }
-
-    formatTime(seconds) {
-        if (seconds === null || seconds === undefined) return '--:--';
-        const mins = Math.floor(seconds / 60);
-        const secs = Math.floor(seconds % 60);
-        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    }
-
-    showLoopInfo(looper) {
-        if (looper.state.pointA !== null && looper.state.pointB !== null) {
-            const loopLength = looper.state.pointB - looper.state.pointA;
-            this.updateDisplayText(
-                `LOOP ${this.formatTime(looper.state.pointA)}`,
-                `LEN ${loopLength.toFixed(2)}s`
-            );
-        } else if (looper.state.pointA !== null) {
-            this.updateDisplayText(
-                `A: ${this.formatTime(looper.state.pointA)}`,
-                'SET B'
-            );
-        } else {
-            this.updateDisplayText('READY', '--------');
-        }
-    }
+function formatTime(seconds) {
+  if (seconds == null || isNaN(seconds)) return '--:--';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 100);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
 }
 
-// Parameter persistence with high-quality audio processing
+function clamp(val, min, max) {
+  return Math.max(min, Math.min(max, val));
+}
+
+// --- CSS Injection ---
+
+function injectStyles() {
+  if (document.getElementById('yt-loop-station-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'yt-loop-station-styles';
+  style.textContent = `
+    .ytls-pedal {
+      position: fixed; top: 10px; right: 10px; z-index: 999999;
+      width: 300px; font-family: 'Arial', sans-serif;
+      transform: scale(0.7); transform-origin: top right;
+      user-select: none; border-radius: 16px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      background: #c42821; padding: 8px; cursor: default;
+    }
+    .ytls-pedal.ytls-scaled { transform: scale(0.95); transform-origin: top right; }
+    .ytls-drag-bar {
+      height: 20px; background: linear-gradient(to bottom, #d44, #a22);
+      border-radius: 12px 12px 0 0; cursor: grab;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .ytls-drag-bar-dots {
+      display: flex; gap: 3px;
+    }
+    .ytls-drag-dot {
+      width: 4px; height: 4px; border-radius: 50%;
+      background: rgba(255,255,255,0.4);
+    }
+    .ytls-close-btn {
+      position: absolute; top: -6px; right: -6px;
+      width: 20px; height: 20px; border-radius: 50%;
+      background: #e33; border: 2px solid #fff;
+      color: #fff; font-size: 12px; line-height: 20px;
+      text-align: center; cursor: pointer; z-index: 10;
+      font-weight: bold;
+    }
+    .ytls-close-btn:hover { background: #f55; }
+    .ytls-hamburger {
+      position: absolute; top: 2px; left: 14px;
+      width: 24px; height: 20px; cursor: pointer; z-index: 10;
+      display: flex; flex-direction: column; justify-content: center;
+      align-items: center; gap: 3px;
+    }
+    .ytls-hamburger-line {
+      width: 16px; height: 2px; background: rgba(255,255,255,0.7);
+      border-radius: 1px;
+    }
+    .ytls-control-panel {
+      background: linear-gradient(to bottom, #1a1a1a, #111);
+      border-radius: 8px; padding: 12px; margin-top: 4px;
+    }
+    .ytls-lcd {
+      width: 100%; height: 60px; border-radius: 4px;
+      background: #1a0000; border: 1px solid #333;
+    }
+    .ytls-lcd-text { fill: #ff3333; font-family: monospace; font-size: 13px; }
+    .ytls-lcd-glow { filter: url(#ytls-glow); }
+    .ytls-knobs-row {
+      display: flex; justify-content: space-around;
+      margin-top: 12px;
+    }
+    .ytls-knob-group { text-align: center; }
+    .ytls-knob {
+      width: 60px; height: 60px; border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, #555, #222);
+      border: 2px solid #444; cursor: ns-resize; position: relative;
+      margin: 0 auto;
+    }
+    .ytls-knob-indicator {
+      position: absolute; bottom: 6px; left: 50%;
+      width: 3px; height: 14px; background: #ff4444;
+      border-radius: 1px; transform-origin: bottom center;
+    }
+    .ytls-knob-label {
+      color: #999; font-size: 10px; margin-top: 4px;
+      text-transform: uppercase; letter-spacing: 1px;
+    }
+    .ytls-toggles-grid {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 8px; margin-top: 12px;
+    }
+    .ytls-toggle-group { text-align: center; }
+    .ytls-toggle-track {
+      width: 40px; height: 18px; background: #333;
+      border-radius: 9px; margin: 0 auto; position: relative;
+      cursor: pointer; border: 1px solid #555;
+    }
+    .ytls-toggle-handle {
+      width: 14px; height: 14px; background: #ccc;
+      border-radius: 50%; position: absolute;
+      top: 2px; left: 13px; transition: left 0.1s;
+    }
+    .ytls-toggle-handle.left { left: 2px; }
+    .ytls-toggle-handle.right { left: 24px; }
+    .ytls-toggle-label {
+      color: #999; font-size: 9px; margin-top: 3px;
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .ytls-logo-section {
+      text-align: center; padding: 6px 0;
+    }
+    .ytls-logo-section img {
+      height: 30px; opacity: 0.9;
+    }
+    .ytls-footswitch-area {
+      padding: 8px;
+    }
+    .ytls-footswitch {
+      width: 100%; height: 60px; border-radius: 8px;
+      background: linear-gradient(to bottom, #444, #222);
+      border: 2px solid #555; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      color: #999; font-size: 14px; font-weight: bold;
+      letter-spacing: 2px; text-transform: uppercase;
+      transition: background 0.15s;
+    }
+    .ytls-footswitch:active { background: linear-gradient(to bottom, #333, #111); }
+    .ytls-footswitch.rec { color: #ff4444; }
+    .ytls-footswitch.play { color: #44ff44; }
+    .ytls-settings-panel {
+      display: none; background: #111; border-radius: 8px;
+      padding: 12px; margin-top: 4px; color: #ccc;
+      font-size: 11px; max-height: 400px; overflow-y: auto;
+    }
+    .ytls-settings-panel.open { display: block; }
+    .ytls-settings-section {
+      margin-bottom: 12px; padding-bottom: 8px;
+      border-bottom: 1px solid #333;
+    }
+    .ytls-settings-section:last-child { border-bottom: none; }
+    .ytls-settings-title {
+      font-size: 10px; color: #888; text-transform: uppercase;
+      letter-spacing: 1px; margin-bottom: 6px;
+    }
+    .ytls-settings-row {
+      display: flex; align-items: center;
+      justify-content: space-between; margin: 4px 0;
+    }
+    .ytls-btn {
+      background: #333; color: #ccc; border: 1px solid #555;
+      border-radius: 4px; padding: 4px 8px; cursor: pointer;
+      font-size: 10px;
+    }
+    .ytls-btn:hover { background: #444; }
+    .ytls-btn.active { background: #c42821; border-color: #e44; }
+    .ytls-eq-container {
+      display: flex; justify-content: space-around; align-items: flex-end;
+      height: 100px; padding: 8px 0;
+    }
+    .ytls-eq-band { text-align: center; }
+    .ytls-eq-slider {
+      writing-mode: vertical-lr; direction: rtl;
+      width: 20px; height: 70px; accent-color: #c42821;
+    }
+    .ytls-eq-label { font-size: 8px; color: #888; margin-top: 2px; }
+    .ytls-pitch-section { text-align: center; }
+    .ytls-pitch-display {
+      font-family: monospace; font-size: 16px; color: #ff4444;
+      margin: 4px 0;
+    }
+    .ytls-pitch-slider {
+      width: 80%; accent-color: #c42821;
+    }
+    .ytls-pitch-btns { display: flex; justify-content: center; gap: 4px; margin-top: 4px; }
+    .ytls-bookmark-list {
+      max-height: 120px; overflow-y: auto; margin-top: 4px;
+    }
+    .ytls-bookmark-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 3px 0; border-bottom: 1px solid #222;
+    }
+    .ytls-bookmark-name { color: #ccc; cursor: pointer; flex: 1; }
+    .ytls-bookmark-name:hover { color: #ff4444; }
+    .ytls-build-info { color: #555; font-size: 9px; text-align: center; margin-top: 8px; }
+    .ytls-switch-toggle {
+      width: 36px; height: 18px; border-radius: 9px;
+      background: #333; border: 1px solid #555;
+      position: relative; cursor: pointer; display: inline-block;
+    }
+    .ytls-switch-toggle.on { background: #c42821; }
+    .ytls-switch-dot {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #ccc; position: absolute; top: 2px; left: 2px;
+      transition: left 0.15s;
+    }
+    .ytls-switch-toggle.on .ytls-switch-dot { left: 20px; }
+  `;
+  document.head.appendChild(style);
+}
+
+// --- Classes ---
+
 class ParameterStore {
-    constructor() {
-        this.currentVideoUrl = null;
-        this.parameters = {
-            volume: 50,
-            tempo: 50
-        };
-        this.continuousApplyInterval = null;
-        this.audioEngine = null;
-        this.pitchShiftActive = false;
-        this.currentPitchShift = 0;
+  constructor(video) {
+    this.video = video;
+    this.volume = 50;
+    this.tempo = 50;
+    this.pitchShift = 0;
+    this.pitchEnabled = false;
+    this.intervalId = null;
+  }
+
+  startContinuousApply() {
+    this.applyCurrent();
+    this.intervalId = setInterval(() => this.applyCurrent(), 500);
+  }
+
+  stopContinuousApply() {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
     }
+  }
 
-    updateCurrentVideo(videoElement, audioEngine = null) {
-        const newVideoUrl = window.location.href;
+  applyCurrent() {
+    if (!this.video) return;
+    this.video.volume = clamp(this.volume / 100, 0, 1);
+    const rate = tempoToRate(this.tempo);
+    this.video.playbackRate = rate;
+    setPreservesPitch(this.video, !this.pitchEnabled);
+  }
 
-        // Reset parameters when switching videos
-        if (this.currentVideoUrl && this.currentVideoUrl !== newVideoUrl) {
-            this.resetParameters();
-        }
+  setVolume(val) {
+    this.volume = clamp(val, 0, 100);
+    this.applyCurrent();
+  }
 
-        this.currentVideoUrl = newVideoUrl;
-        this.audioEngine = audioEngine;
+  setTempo(val) {
+    this.tempo = clamp(val, 0, 100);
+    this.applyCurrent();
+  }
 
-        // Enable pitch preservation for tempo changes (native HTML5 feature)
-        if (videoElement && typeof videoElement.preservesPitch !== 'undefined') {
-            videoElement.preservesPitch = true;
-        } else if (videoElement && typeof videoElement.mozPreservesPitch !== 'undefined') {
-            // Firefox compatibility
-            videoElement.mozPreservesPitch = true;
-        } else if (videoElement && typeof videoElement.webkitPreservesPitch !== 'undefined') {
-            // Safari compatibility
-            videoElement.webkitPreservesPitch = true;
-        }
+  setPitchShift(semitones) {
+    this.pitchShift = clamp(semitones, -12, 12);
+  }
 
-        // Initialize audio engine if provided
-        if (this.audioEngine && !this.audioEngine.audioContext) {
-            this.audioEngine.setupHighQualityAudio(videoElement);
-        }
-
-        this.startContinuousApply(videoElement);
-    }
-
-    resetParameters() {
-        this.parameters = {
-            volume: 50,
-            tempo: 50
-        };
-    }
-
-    setParameter(param, value) {
-        this.parameters[param] = value;
-    }
-
-    getParameter(param) {
-        return this.parameters[param];
-    }
-
-    startContinuousApply(videoElement) {
-        // Clear existing interval
-        if (this.continuousApplyInterval) {
-            clearInterval(this.continuousApplyInterval);
-        }
-
-        // Apply parameters initially
-        this.applyParameters(videoElement);
-
-        // Apply parameters every 500ms to prevent resets (reduced frequency to avoid glitching)
-        this.continuousApplyInterval = setInterval(() => {
-            if (videoElement) {
-                this.applyParameters(videoElement);
-            }
-        }, 500);
-    }
-
-    applyParameters(videoElement) {
-        // Apply volume (always apply this)
-        const targetVolume = this.parameters.volume / 100;
-        if (Math.abs(videoElement.volume - targetVolume) > 0.01) {
-            videoElement.volume = targetVolume;
-        }
-
-        // Skip tempo/pitch controls if pitch shift is active
-        if (this.pitchShiftActive) {
-            // Keep pitch shift active - do not reset preservesPitch or playbackRate
-            return;
-        }
-
-        // Ensure pitch preservation is enabled (for normal tempo control)
-        if (typeof videoElement.preservesPitch !== 'undefined' && !videoElement.preservesPitch) {
-            videoElement.preservesPitch = true;
-        } else if (typeof videoElement.mozPreservesPitch !== 'undefined' && !videoElement.mozPreservesPitch) {
-            videoElement.mozPreservesPitch = true;
-        } else if (typeof videoElement.webkitPreservesPitch !== 'undefined' && !videoElement.webkitPreservesPitch) {
-            videoElement.webkitPreservesPitch = true;
-        }
-
-        // Apply tempo/playback rate - 50 = 1.0x (noon position)
-        // Range: 0 = 0.5x, 50 = 1.0x, 100 = 2.0x
-        const targetRate = this.parameters.tempo <= 50
-            ? 0.5 + (this.parameters.tempo / 50) * 0.5  // 0-50 maps to 0.5-1.0
-            : 1.0 + ((this.parameters.tempo - 50) / 50) * 1.0;  // 50-100 maps to 1.0-2.0
-
-        // Use high-quality audio engine if available, otherwise fallback to direct playback rate
-        if (this.audioEngine && this.audioEngine.audioContext) {
-            if (Math.abs(this.audioEngine.targetRate - targetRate) > 0.01) {
-                this.audioEngine.setTempo(targetRate, videoElement);
-            }
-        } else {
-            if (Math.abs(videoElement.playbackRate - targetRate) > 0.01) {
-                videoElement.playbackRate = targetRate;
-            }
-        }
-    }
-
-    stopContinuousApply() {
-        if (this.continuousApplyInterval) {
-            clearInterval(this.continuousApplyInterval);
-            this.continuousApplyInterval = null;
-        }
-    }
+  setPitchEnabled(enabled) {
+    this.pitchEnabled = enabled;
+    setPreservesPitch(this.video, !enabled);
+  }
 }
 
-// Main extension logic
-let pedalVisible = false;
-let parameterStore = new ParameterStore();
-let videoObserver = null;
+class HighQualityAudioEngine {
+  constructor(video) {
+    this.video = video;
+    this.audioContext = null;
+    this.source = null;
+    this.eqFilters = [];
+    this.tempoGainNode = null;
+    this.compressor = null;
+    this.gainNode = null;
+    this.analyser = null;
+    this.rateAnimationId = null;
+    this.targetRate = 1.0;
+    this.currentRate = 1.0;
+  }
 
-function findVideo() {
-    // Find any video element on the page
-    return document.querySelector('video');
+  setup() {
+    try {
+      this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      this.source = this.audioContext.createMediaElementSource(this.video);
+
+      const eqFreqs = [60, 250, 1000, 4000, 16000];
+      this.eqFilters = eqFreqs.map((freq, i) => {
+        const filter = this.audioContext.createBiquadFilter();
+        filter.type = i === 0 ? 'lowshelf' : i === eqFreqs.length - 1 ? 'highshelf' : 'peaking';
+        filter.frequency.value = freq;
+        filter.gain.value = 0;
+        filter.Q.value = 1;
+        return filter;
+      });
+
+      this.tempoGainNode = this.audioContext.createGain();
+      this.tempoGainNode.gain.value = 1.0;
+
+      this.compressor = this.audioContext.createDynamicsCompressor();
+      this.compressor.threshold.value = -24;
+      this.compressor.knee.value = 30;
+      this.compressor.ratio.value = 4;
+      this.compressor.attack.value = 0.003;
+      this.compressor.release.value = 0.25;
+
+      this.gainNode = this.audioContext.createGain();
+      this.gainNode.gain.value = 1.0;
+
+      this.analyser = this.audioContext.createAnalyser();
+      this.analyser.fftSize = 256;
+
+      // Chain: source → EQ → tempoGain → compressor → gain → analyser → destination
+      let prev = this.source;
+      for (const filter of this.eqFilters) {
+        prev.connect(filter);
+        prev = filter;
+      }
+      prev.connect(this.tempoGainNode);
+      this.tempoGainNode.connect(this.compressor);
+      this.compressor.connect(this.gainNode);
+      this.gainNode.connect(this.analyser);
+      this.analyser.connect(this.audioContext.destination);
+
+      debugLog('Audio engine setup complete');
+    } catch (e) {
+      debugLog('Audio engine setup failed:', e);
+    }
+  }
+
+  setEQBand(index, gainValue) {
+    if (this.eqFilters[index]) {
+      this.eqFilters[index].gain.value = clamp(gainValue, -12, 12);
+    }
+  }
+
+  smoothRateChange(targetRate) {
+    this.targetRate = targetRate;
+    if (!this.rateAnimationId) this._animateRate();
+  }
+
+  _animateRate() {
+    const diff = this.targetRate - this.currentRate;
+    if (Math.abs(diff) < 0.005) {
+      this.currentRate = this.targetRate;
+      this.video.playbackRate = this.targetRate;
+      this.rateAnimationId = null;
+      return;
+    }
+    this.currentRate += diff * 0.15;
+    this.video.playbackRate = this.currentRate;
+    this.rateAnimationId = requestAnimationFrame(() => this._animateRate());
+  }
+
+  resumeContext() {
+    if (this.audioContext && this.audioContext.state === 'suspended') {
+      this.audioContext.resume();
+    }
+  }
+
+  destroy() {
+    if (this.rateAnimationId) cancelAnimationFrame(this.rateAnimationId);
+    if (this.audioContext) {
+      this.audioContext.close().catch(() => {});
+    }
+  }
 }
 
-function createLoopStation() {
-    if (pedalVisible || document.querySelector('.yt-loop-pedal')) return;
+class VideoLooper {
+  constructor(video) {
+    this.video = video;
+    this.pointA = null;
+    this.pointB = null;
+    this.isLooping = false;
+    this.crossfadeDuration = 0.03;
+    this.crossfadeTimeout = null;
+    this.latencyCompensation = 0.15;
+    this.latencyEnabled = true;
+    this.audioContext = null;
+    this.gainNode = null;
+    this._onTimeUpdate = this._onTimeUpdate.bind(this);
+  }
 
-    const videoEl = findVideo();
-    if (!videoEl) {
-        console.log('No video found on page');
-        return;
+  setAudioContext(audioContext, gainNode) {
+    this.audioContext = audioContext;
+    this.gainNode = gainNode;
+  }
+
+  getCompensatedTime() {
+    const raw = this.video.currentTime;
+    return this.latencyEnabled ? Math.max(0, raw - this.latencyCompensation) : raw;
+  }
+
+  setPointA() {
+    this.pointA = this.getCompensatedTime();
+    debugLog('Point A set:', this.pointA);
+    return this.pointA;
+  }
+
+  setPointB() {
+    this.pointB = this.getCompensatedTime();
+    if (this.pointB <= this.pointA) {
+      this.pointB = null;
+      return null;
+    }
+    debugLog('Point B set:', this.pointB);
+    return this.pointB;
+  }
+
+  startLoop() {
+    if (this.pointA == null || this.pointB == null) return false;
+    this.isLooping = true;
+    this.video.addEventListener('timeupdate', this._onTimeUpdate);
+    this.video.currentTime = this.pointA;
+    debugLog('Loop started:', this.pointA, '→', this.pointB);
+    return true;
+  }
+
+  stopLoop() {
+    this.isLooping = false;
+    this.video.removeEventListener('timeupdate', this._onTimeUpdate);
+    if (this.crossfadeTimeout) {
+      clearTimeout(this.crossfadeTimeout);
+      this.crossfadeTimeout = null;
+    }
+    if (this.gainNode && this.audioContext) {
+      this.gainNode.gain.cancelScheduledValues(this.audioContext.currentTime);
+      this.gainNode.gain.setValueAtTime(1.0, this.audioContext.currentTime);
+    }
+    debugLog('Loop stopped');
+  }
+
+  _onTimeUpdate() {
+    if (!this.isLooping || this.pointA == null || this.pointB == null) return;
+    const current = this.video.currentTime;
+    const fadeStart = this.pointB - this.crossfadeDuration;
+
+    if (current >= fadeStart && current < this.pointB && !this.crossfadeTimeout) {
+      this._startCrossfade();
+    }
+    if (current >= this.pointB) {
+      this.video.currentTime = this.pointA;
+    }
+  }
+
+  _startCrossfade() {
+    if (!this.gainNode || !this.audioContext) {
+      this.crossfadeTimeout = setTimeout(() => {
+        this.video.currentTime = this.pointA;
+        this.crossfadeTimeout = null;
+      }, this.crossfadeDuration * 500);
+      return;
     }
 
-    // Create pedal container with your exact styling
-    const pedalHTML = `
-        <div class="yt-loop-pedal" style="
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            z-index: 10000;
-            background: #c42821;
-            width: 280px;
-            border-radius: 14px;
-            padding: 10px;
-            box-shadow: 0 14px 28px rgba(0,0,0,0.8), inset 0 1px 3px rgba(255,255,255,0.2);
-            font-family: Arial, sans-serif;
-            transform: scale(0.7);
-            transform-origin: top right;
-        ">
-            <!-- Drag Bar and Close Button -->
-            <div id="dragBar" style="
-                position: absolute;
-                top: -3px;
-                left: 20px;
-                right: 35px;
-                height: 20px;
-                background: rgba(255,255,255,0.1);
-                border-radius: 10px 10px 0 0;
-                cursor: move;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            ">
-                <div style="
-                    width: 30px;
-                    height: 3px;
-                    background: rgba(255,255,255,0.3);
-                    border-radius: 2px;
-                "></div>
-            </div>
+    const ctx = this.audioContext;
+    const now = ctx.currentTime;
+    const half = this.crossfadeDuration / 2;
 
-            <!-- Control Panel -->
-            <div style="
-                background: linear-gradient(135deg, #3a0a07 0%, #1a0504 100%);
-                border-radius: 10px;
-                padding: 14px;
-                margin-bottom: 10px;
-                box-shadow: inset 0 2px 6px rgba(0,0,0,0.7);
-            ">
-                <!-- LCD Display -->
-                <div id="displayContainer" style="
-                    background: #200808;
-                    border: 2px solid #4a1a17;
-                    border-radius: 6px;
-                    padding: 0;
-                    margin-bottom: 14px;
-                    box-shadow: inset 0 1px 4px rgba(0,0,0,0.9);
-                    overflow: hidden;
-                    height: 56px;
-                "></div>
+    this.gainNode.gain.cancelScheduledValues(now);
+    this.gainNode.gain.setValueAtTime(1.0, now);
+    this.gainNode.gain.linearRampToValueAtTime(0.0, now + half);
 
-                <!-- Controls Container -->
-                <div style="
-                    display: flex;
-                    gap: 14px;
-                    align-items: flex-start;
-                    justify-content: space-between;
-                    margin-top: -7px;
-                ">
-                    <!-- Knobs Section -->
-                    <div style="
-                        display: flex;
-                        gap: 21px;
-                        margin-top: 14px;
-                    ">
-                        <div style="display: flex; flex-direction: column; align-items: center;">
-                            <div class="large-knob" data-param="vol" data-value="50" style="
-                                width: 49px;
-                                height: 49px;
-                                border-radius: 50%;
-                                background: linear-gradient(135deg, #3a3a3a 0%, #1a1a1a 100%);
-                                border: 3px solid #000;
-                                box-shadow: 0 3px 7px rgba(0,0,0,0.8), inset 0 -1px 3px rgba(0,0,0,0.6), inset 0 1px 3px rgba(255,255,255,0.2);
-                                position: relative;
-                                cursor: pointer;
-                                transform: rotate(-135deg);
-                                transition: transform 0.1s ease;
-                            ">
-                                <div style="
-                                    content: '';
-                                    position: absolute;
-                                    width: 3px;
-                                    height: 21px;
-                                    background: linear-gradient(180deg, #fff 0%, #ccc 100%);
-                                    top: 6px;
-                                    left: 50%;
-                                    transform: translateX(-50%);
-                                    border-radius: 2px;
-                                    box-shadow: 0 0 2px rgba(255,255,255,0.5);
-                                "></div>
-                            </div>
-                            <label style="
-                                color: #fff;
-                                font-size: 8px;
-                                font-weight: bold;
-                                text-transform: uppercase;
-                                margin-top: 6px;
-                                letter-spacing: 1px;
-                                text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
-                            ">VOL</label>
-                        </div>
+    this.crossfadeTimeout = setTimeout(() => {
+      this.video.currentTime = this.pointA;
+      const nowAfter = ctx.currentTime;
+      this.gainNode.gain.cancelScheduledValues(nowAfter);
+      this.gainNode.gain.setValueAtTime(0.0, nowAfter);
+      this.gainNode.gain.linearRampToValueAtTime(1.0, nowAfter + half);
+      this.crossfadeTimeout = null;
+    }, half * 1000);
+  }
 
-                        <div style="display: flex; flex-direction: column; align-items: center;">
-                            <div class="large-knob" data-param="tempo" data-value="50" style="
-                                width: 49px;
-                                height: 49px;
-                                border-radius: 50%;
-                                background: linear-gradient(135deg, #3a3a3a 0%, #1a1a1a 100%);
-                                border: 3px solid #000;
-                                box-shadow: 0 3px 7px rgba(0,0,0,0.8), inset 0 -1px 3px rgba(0,0,0,0.6), inset 0 1px 3px rgba(255,255,255,0.2);
-                                position: relative;
-                                cursor: pointer;
-                                transform: rotate(-135deg);
-                                transition: transform 0.1s ease;
-                            ">
-                                <div style="
-                                    content: '';
-                                    position: absolute;
-                                    width: 3px;
-                                    height: 21px;
-                                    background: linear-gradient(180deg, #fff 0%, #ccc 100%);
-                                    top: 6px;
-                                    left: 50%;
-                                    transform: translateX(-50%);
-                                    border-radius: 2px;
-                                    box-shadow: 0 0 2px rgba(255,255,255,0.5);
-                                "></div>
-                            </div>
-                            <label style="
-                                color: #fff;
-                                font-size: 8px;
-                                font-weight: bold;
-                                text-transform: uppercase;
-                                margin-top: 6px;
-                                letter-spacing: 1px;
-                                text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
-                            ">TEMPO</label>
-                        </div>
-                    </div>
-
-                    <!-- Toggle Switches -->
-                    <div style="
-                        display: grid;
-                        grid-template-columns: repeat(2, 1fr);
-                        gap: 14px 10px;
-                        margin-top: 14px;
-                    ">
-                        <div style="display: flex; flex-direction: column; align-items: center;">
-                            <div class="toggle-switch" data-toggle="jog-a" style="
-                                position: relative;
-                                width: 50px;
-                                height: 30px;
-                                background: #1a0504;
-                                border-radius: 15px;
-                                border: 2px solid #000;
-                                box-shadow: inset 0 2px 5px rgba(0,0,0,0.8);
-                                cursor: pointer;
-                            ">
-                                <div class="toggle-handle" style="
-                                    position: absolute;
-                                    width: 22px;
-                                    height: 22px;
-                                    background: linear-gradient(135deg, #f0f0f0 0%, #d0d0d0 100%);
-                                    border-radius: 50%;
-                                    top: 2px;
-                                    left: 50%;
-                                    transform: translateX(-50%);
-                                    transition: all 0.15s ease;
-                                    box-shadow: 0 2px 4px rgba(0,0,0,0.6), inset 0 1px 2px rgba(255,255,255,0.5);
-                                "></div>
-                            </div>
-                            <label style="
-                                color: rgba(255,255,255,0.8);
-                                font-size: 8px;
-                                font-weight: bold;
-                                text-transform: uppercase;
-                                margin-top: 4px;
-                                letter-spacing: 0.5px;
-                            ">JOG A</label>
-                        </div>
-
-                        <div style="display: flex; flex-direction: column; align-items: center;">
-                            <div class="toggle-switch" data-toggle="jog-b" style="
-                                position: relative;
-                                width: 50px;
-                                height: 30px;
-                                background: #1a0504;
-                                border-radius: 15px;
-                                border: 2px solid #000;
-                                box-shadow: inset 0 2px 5px rgba(0,0,0,0.8);
-                                cursor: pointer;
-                            ">
-                                <div class="toggle-handle" style="
-                                    position: absolute;
-                                    width: 22px;
-                                    height: 22px;
-                                    background: linear-gradient(135deg, #f0f0f0 0%, #d0d0d0 100%);
-                                    border-radius: 50%;
-                                    top: 2px;
-                                    left: 50%;
-                                    transform: translateX(-50%);
-                                    transition: all 0.15s ease;
-                                    box-shadow: 0 2px 4px rgba(0,0,0,0.6), inset 0 1px 2px rgba(255,255,255,0.5);
-                                "></div>
-                            </div>
-                            <label style="
-                                color: rgba(255,255,255,0.8);
-                                font-size: 8px;
-                                font-weight: bold;
-                                text-transform: uppercase;
-                                margin-top: 4px;
-                                letter-spacing: 0.5px;
-                            ">JOG B</label>
-                        </div>
-
-                        <div style="display: flex; flex-direction: column; align-items: center;">
-                            <div class="toggle-switch" data-toggle="section" style="
-                                position: relative;
-                                width: 50px;
-                                height: 30px;
-                                background: #1a0504;
-                                border-radius: 15px;
-                                border: 2px solid #000;
-                                box-shadow: inset 0 2px 5px rgba(0,0,0,0.8);
-                                cursor: pointer;
-                            ">
-                                <div class="toggle-handle" style="
-                                    position: absolute;
-                                    width: 22px;
-                                    height: 22px;
-                                    background: linear-gradient(135deg, #f0f0f0 0%, #d0d0d0 100%);
-                                    border-radius: 50%;
-                                    top: 2px;
-                                    left: 50%;
-                                    transform: translateX(-50%);
-                                    transition: all 0.15s ease;
-                                    box-shadow: 0 2px 4px rgba(0,0,0,0.6), inset 0 1px 2px rgba(255,255,255,0.5);
-                                "></div>
-                            </div>
-                            <label style="
-                                color: rgba(255,255,255,0.8);
-                                font-size: 8px;
-                                font-weight: bold;
-                                text-transform: uppercase;
-                                margin-top: 4px;
-                                letter-spacing: 0.5px;
-                            ">SECTION</label>
-                        </div>
-
-                        <div style="display: flex; flex-direction: column; align-items: center;">
-                            <div class="toggle-switch" data-toggle="length" style="
-                                position: relative;
-                                width: 50px;
-                                height: 30px;
-                                background: #1a0504;
-                                border-radius: 15px;
-                                border: 2px solid #000;
-                                box-shadow: inset 0 2px 5px rgba(0,0,0,0.8);
-                                cursor: pointer;
-                            ">
-                                <div class="toggle-handle" style="
-                                    position: absolute;
-                                    width: 22px;
-                                    height: 22px;
-                                    background: linear-gradient(135deg, #f0f0f0 0%, #d0d0d0 100%);
-                                    border-radius: 50%;
-                                    top: 2px;
-                                    left: 50%;
-                                    transform: translateX(-50%);
-                                    transition: all 0.15s ease;
-                                    box-shadow: 0 2px 4px rgba(0,0,0,0.6), inset 0 1px 2px rgba(255,255,255,0.5);
-                                "></div>
-                            </div>
-                            <label style="
-                                color: rgba(255,255,255,0.8);
-                                font-size: 8px;
-                                font-weight: bold;
-                                text-transform: uppercase;
-                                margin-top: 4px;
-                                letter-spacing: 0.5px;
-                            ">LENGTH</label>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Middle Section -->
-            <div style="
-                background: #c42821;
-                padding: 25px 20px;
-                text-align: center;
-            ">
-                <img src="${chrome.runtime.getURL('loop-station-text.png')}" alt="Loop Station" style="width: 100%; height: auto; margin-bottom: 5px;" onerror="this.style.display='none'">
-            </div>
-
-            <!-- Footswitch Section -->
-            <div id="footswitch" style="
-                background: linear-gradient(135deg, #2a0a08 0%, #1a0504 100%);
-                border-radius: 15px;
-                padding: 40px;
-                box-shadow: inset 0 3px 8px rgba(0,0,0,0.9);
-                position: relative;
-                cursor: pointer;
-                user-select: none;
-                transition: all 0.2s ease;
-            ">
-                <div style="
-                    color: #3a3a3a;
-                    font-size: 30px;
-                    font-weight: bold;
-                    text-align: center;
-                    letter-spacing: 2px;
-                    text-shadow: 0 2px 4px rgba(0,0,0,0.8);
-                    transition: all 0.2s ease;
-                    pointer-events: none;
-                ">REC</div>
-            </div>
-
-            <!-- Hamburger Menu button -->
-            <div id="hamburgerMenu" style="
-                position: absolute;
-                top: -7px;
-                left: -7px;
-                width: 21px;
-                height: 21px;
-                background: #2a2a2a;
-                border-radius: 50%;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                cursor: pointer;
-                color: white;
-                font-weight: bold;
-                font-size: 10px;
-                box-shadow: 0 1px 4px rgba(0,0,0,0.5);
-                gap: 2px;
-                padding: 4px;
-            ">
-                <div style="width: 10px; height: 2px; background: white; border-radius: 1px;"></div>
-                <div style="width: 10px; height: 2px; background: white; border-radius: 1px;"></div>
-                <div style="width: 10px; height: 2px; background: white; border-radius: 1px;"></div>
-            </div>
-
-            <!-- Close button -->
-            <div style="
-                position: absolute;
-                top: -7px;
-                right: -7px;
-                width: 21px;
-                height: 21px;
-                background: #ff0000;
-                border-radius: 50%;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                cursor: pointer;
-                color: white;
-                font-weight: bold;
-                font-size: 12px;
-                box-shadow: 0 1px 4px rgba(0,0,0,0.5);
-            " onclick="parameterStore.stopContinuousApply(); document.querySelector('.yt-loop-pedal').remove(); pedalVisible = false;">×</div>
-
-            <!-- Settings Menu Panel -->
-            <div id="settingsPanel" style="
-                position: absolute;
-                top: 25px;
-                left: 0;
-                width: 280px;
-                background: linear-gradient(135deg, #3a0a07 0%, #1a0504 100%);
-                border-radius: 10px;
-                padding: 15px;
-                box-shadow: 0 8px 16px rgba(0,0,0,0.9);
-                display: none;
-                z-index: 10001;
-                max-height: 500px;
-                overflow-y: auto;
-            ">
-                <h3 style="color: #ff3030; margin: 0 0 15px 0; font-size: 14px; text-align: center; text-transform: uppercase; letter-spacing: 2px;">Settings</h3>
-
-                <!-- Scale Toggle -->
-                <div style="margin-bottom: 15px;">
-                    <label style="color: rgba(255,255,255,0.9); font-size: 10px; font-weight: bold; display: block; margin-bottom: 5px;">SCALE UP (+25%)</label>
-                    <div class="menu-toggle" data-setting="scale" style="
-                        position: relative;
-                        width: 50px;
-                        height: 26px;
-                        background: #1a0504;
-                        border-radius: 13px;
-                        border: 2px solid #000;
-                        cursor: pointer;
-                    ">
-                        <div class="menu-toggle-handle" style="
-                            position: absolute;
-                            width: 18px;
-                            height: 18px;
-                            background: linear-gradient(135deg, #f0f0f0 0%, #d0d0d0 100%);
-                            border-radius: 50%;
-                            top: 2px;
-                            left: 2px;
-                            transition: all 0.2s ease;
-                            box-shadow: 0 2px 4px rgba(0,0,0,0.6);
-                        "></div>
-                    </div>
-                </div>
-
-                <!-- Latency Compensation Toggle -->
-                <div style="margin-bottom: 15px;">
-                    <label style="color: rgba(255,255,255,0.9); font-size: 10px; font-weight: bold; display: block; margin-bottom: 5px;">LATENCY COMP (150ms)</label>
-                    <div class="menu-toggle" data-setting="latency" style="
-                        position: relative;
-                        width: 50px;
-                        height: 26px;
-                        background: #ff3030;
-                        border-radius: 13px;
-                        border: 2px solid #000;
-                        cursor: pointer;
-                    ">
-                        <div class="menu-toggle-handle" style="
-                            position: absolute;
-                            width: 18px;
-                            height: 18px;
-                            background: linear-gradient(135deg, #f0f0f0 0%, #d0d0d0 100%);
-                            border-radius: 50%;
-                            top: 2px;
-                            left: 26px;
-                            transition: all 0.2s ease;
-                            box-shadow: 0 2px 4px rgba(0,0,0,0.6);
-                        "></div>
-                    </div>
-                </div>
-
-                <!-- 5-Band EQ -->
-                <div style="margin-bottom: 15px;">
-                    <label style="color: rgba(255,255,255,0.9); font-size: 10px; font-weight: bold; display: block; margin-bottom: 8px;">5-BAND EQ</label>
-                    <div style="display: flex; gap: 8px; align-items: flex-end; height: 120px;">
-                        ${['60', '250', '1k', '4k', '16k'].map((freq, i) => `
-                            <div style="flex: 1; display: flex; flex-direction: column; align-items: center;">
-                                <input type="range" class="eq-slider" data-band="${i}" min="-12" max="12" value="0" orient="vertical" style="
-                                    writing-mode: bt-lr;
-                                    -webkit-appearance: slider-vertical;
-                                    width: 8px;
-                                    height: 80px;
-                                    background: linear-gradient(180deg, #1a0504 0%, #3a0a07 100%);
-                                    border-radius: 4px;
-                                    outline: none;
-                                    margin-bottom: 5px;
-                                ">
-                                <span style="color: rgba(255,255,255,0.7); font-size: 8px; font-weight: bold;">${freq}</span>
-                            </div>
-                        `).join('')}
-                    </div>
-                </div>
-
-                <!-- Pitch Shift -->
-                <div style="margin-bottom: 15px;">
-                    <label style="color: rgba(255,255,255,0.9); font-size: 10px; font-weight: bold; display: block; margin-bottom: 5px;">PITCH SHIFT</label>
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <button class="pitch-btn" data-shift="-1" style="
-                            width: 25px;
-                            height: 25px;
-                            background: #2a0a08;
-                            border: 1px solid #000;
-                            border-radius: 4px;
-                            color: #ff3030;
-                            cursor: pointer;
-                            font-weight: bold;
-                        ">-</button>
-                        <input type="range" id="pitchShift" min="-12" max="12" value="0" step="0.5" style="
-                            flex: 1;
-                            height: 6px;
-                            background: linear-gradient(90deg, #1a0504 0%, #3a0a07 100%);
-                            border-radius: 3px;
-                            outline: none;
-                        ">
-                        <button class="pitch-btn" data-shift="1" style="
-                            width: 25px;
-                            height: 25px;
-                            background: #2a0a08;
-                            border: 1px solid #000;
-                            border-radius: 4px;
-                            color: #ff3030;
-                            cursor: pointer;
-                            font-weight: bold;
-                        ">+</button>
-                        <span id="pitchValue" style="color: rgba(255,255,255,0.9); font-size: 10px; font-weight: bold; min-width: 30px;">0</span>
-                    </div>
-                </div>
-
-                <!-- Bookmark -->
-                <div style="margin-bottom: 10px;">
-                    <label style="color: rgba(255,255,255,0.9); font-size: 10px; font-weight: bold; display: block; margin-bottom: 5px;">BOOKMARKS</label>
-                    <button id="saveBookmark" style="
-                        width: 100%;
-                        padding: 8px;
-                        background: #2a0a08;
-                        border: 1px solid #000;
-                        border-radius: 4px;
-                        color: #ff3030;
-                        cursor: pointer;
-                        font-weight: bold;
-                        font-size: 10px;
-                        margin-bottom: 8px;
-                    ">SAVE CURRENT LOOP</button>
-                    <div style="display: flex; gap: 8px; align-items: center;">
-                        <select id="bookmarkList" style="
-                            flex: 1;
-                            padding: 6px;
-                            background: #1a0504;
-                            border: 1px solid #000;
-                            border-radius: 4px;
-                            color: #ff3030;
-                            font-size: 9px;
-                            font-weight: bold;
-                        ">
-                            <option value="">Select bookmark...</option>
-                        </select>
-                        <button id="deleteBookmark" style="
-                            width: 30px;
-                            height: 30px;
-                            background: #2a0a08;
-                            border: 1px solid #000;
-                            border-radius: 4px;
-                            color: #ff3030;
-                            cursor: pointer;
-                            font-weight: bold;
-                            font-size: 14px;
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            padding: 0;
-                        ">🗑</button>
-                    </div>
-                </div>
-
-                <!-- Build Info -->
-                <div style="
-                    margin-top: 20px;
-                    padding-top: 15px;
-                    border-top: 1px solid rgba(255,255,255,0.1);
-                    text-align: center;
-                ">
-                    <span style="
-                        color: rgba(255,255,255,0.5);
-                        font-size: 8px;
-                        font-weight: normal;
-                    ">Build: ${new Date().toISOString().replace('T', ' ').substring(0, 19)} UTC</span>
-                </div>
-            </div>
-        </div>
-    `;
-
-    document.body.insertAdjacentHTML('beforeend', pedalHTML);
-    pedalVisible = true;
-
-    // Initialize components
-    const looper = new VideoLooper();
-    const audio = new HighQualityAudioEngine();
-    const manip = new LoopManipulator();
-    const display = new DigitalDisplay();
-
-    // Setup connections
-    looper.state.activeMedia = videoEl;
-    manip.state.activeMedia = videoEl;
-
-    // Enable pitch preservation immediately (native HTML5 feature)
-    if (videoEl && typeof videoEl.preservesPitch !== 'undefined') {
-        videoEl.preservesPitch = true;
-        console.log('Pitch preservation enabled');
-    } else if (videoEl && typeof videoEl.mozPreservesPitch !== 'undefined') {
-        videoEl.mozPreservesPitch = true;
-        console.log('Pitch preservation enabled (Firefox)');
-    } else if (videoEl && typeof videoEl.webkitPreservesPitch !== 'undefined') {
-        videoEl.webkitPreservesPitch = true;
-        console.log('Pitch preservation enabled (Safari)');
+  jogPoint(point, delta) {
+    if (point === 'A' && this.pointA != null) {
+      this.pointA = Math.max(0, this.pointA + delta);
+      if (this.isLooping) this.video.currentTime = this.pointA;
+      return this.pointA;
     }
-
-    // Update parameter store with current video and audio engine
-    parameterStore.updateCurrentVideo(videoEl, audio);
-
-    // Initialize audio - only setup one audio context to avoid conflicts
-    looper.setupAudioNodes(videoEl).then(() => {
-        console.log('Loop station initialized');
-    }).catch(e => {
-        console.warn('Audio setup skipped:', e);
-    });
-
-    // Initialize display
-    const displayContainer = document.getElementById('displayContainer');
-    displayContainer.innerHTML = display.createDisplaySVG();
-
-    // Pedal state
-    const pedalState = {
-        recording: false,
-        playing: false
-    };
-
-    // Animation loop
-    function renderLoop() {
-        if (document.querySelector('.yt-loop-pedal')) {
-            display.showLoopInfo(looper);
-            requestAnimationFrame(renderLoop);
-        }
+    if (point === 'B' && this.pointB != null) {
+      this.pointB = Math.max(this.pointA + 0.1, this.pointB + delta);
+      return this.pointB;
     }
-    renderLoop();
-
-    // Knob handlers
-    let knobDisplayTimeout = null;
-
-    document.querySelectorAll('.large-knob').forEach(knob => {
-        let isDragging = false;
-        let startY = 0;
-        let startValue = 0;
-
-        function updateKnobRotation(value, skipAudioUpdate = false) {
-            const rotation = -135 + (value * 2.7);
-            knob.style.transform = `rotate(${rotation}deg)`;
-
-            if (!skipAudioUpdate) {
-                if (knob.dataset.param === 'vol') {
-                    // Store parameter and apply immediately
-                    parameterStore.setParameter('volume', value);
-                    videoEl.volume = value / 100;
-                    // Show on display
-                    display.updateDisplayText('VOLUME', `${Math.round(value)}%`);
-                } else if (knob.dataset.param === 'tempo') {
-                    // Store parameter and apply immediately
-                    parameterStore.setParameter('tempo', value);
-                    const rate = value <= 50
-                        ? 0.5 + (value / 50) * 0.5  // 0-50 maps to 0.5-1.0
-                        : 1.0 + ((value - 50) / 50) * 1.0;  // 50-100 maps to 1.0-2.0
-
-                    // Use high-quality audio engine if available
-                    if (audio && audio.audioContext) {
-                        audio.setTempo(rate, videoEl);
-                    } else {
-                        videoEl.playbackRate = rate;
-                    }
-
-                    // Show on display
-                    display.updateDisplayText('TEMPO', `${rate.toFixed(2)}x`);
-                }
-
-                // Clear any existing timeout and set new one to restore display after 2 seconds
-                clearTimeout(knobDisplayTimeout);
-                knobDisplayTimeout = setTimeout(() => {
-                    display.showLoopInfo(looper);
-                }, 2000);
-            }
-        }
-
-        knob.addEventListener('mousedown', (e) => {
-            isDragging = true;
-            startY = e.clientY;
-            startValue = parseFloat(knob.dataset.value);
-            e.preventDefault();
-        });
-
-        document.addEventListener('mousemove', (e) => {
-            if (!isDragging) return;
-            const deltaY = startY - e.clientY;
-            const newValue = Math.max(0, Math.min(100, startValue + deltaY * 0.5));
-            knob.dataset.value = newValue;
-            updateKnobRotation(newValue);
-        });
-
-        document.addEventListener('mouseup', () => {
-            isDragging = false;
-        });
-
-        // Initialize knob position with stored parameter value
-        const param = knob.dataset.param === 'vol' ? 'volume' : 'tempo';
-        const storedValue = parameterStore.getParameter(param);
-        knob.dataset.value = storedValue;
-        updateKnobRotation(storedValue, true);
-    });
-
-    // Toggle switch handlers
-    document.querySelectorAll('.toggle-switch').forEach(toggle => {
-        let timeoutId = null;
-        const toggleName = toggle.dataset.toggle;
-
-        function performAction(direction) {
-            switch(toggleName) {
-                case 'jog-a':
-                    const deltaA = direction === 'left' ? -0.05 : 0.05;
-                    looper.jogPointA(deltaA);
-                    display.updateDisplayText('JOG A', `${direction === 'left' ? '<<' : '>>'}`);
-                    break;
-                case 'jog-b':
-                    const deltaB = direction === 'left' ? -0.05 : 0.05;
-                    looper.jogPointB(deltaB);
-                    display.updateDisplayText('JOG B', `${direction === 'left' ? '<<' : '>>'}`);
-                    break;
-                case 'section':
-                    const sectionDir = direction === 'left' ? -1 : 1;
-                    manip.jumpSection(looper, sectionDir);
-                    display.updateDisplayText('SECTION', direction === 'left' ? 'PREV' : 'NEXT');
-                    break;
-                case 'length':
-                    if (direction === 'left') {
-                        manip.halfLoopLength(looper);
-                        display.updateDisplayText('LENGTH', '0.5x');
-                    } else {
-                        manip.doubleLoopLength(looper);
-                        display.updateDisplayText('LENGTH', '2.0x');
-                    }
-                    break;
-            }
-
-            // Reset display after 2 seconds
-            clearTimeout(timeoutId);
-            timeoutId = setTimeout(() => {
-                display.showLoopInfo(looper);
-            }, 2000);
-        }
-
-        toggle.addEventListener('mousedown', (e) => {
-            const rect = toggle.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const center = rect.width / 2;
-            const handle = toggle.querySelector('.toggle-handle');
-
-            if (x < center) {
-                handle.style.transform = 'translateX(-18px)';
-                performAction('left');
-            } else {
-                handle.style.transform = 'translateX(5px)';
-                performAction('right');
-            }
-        });
-
-        toggle.addEventListener('mouseup', () => {
-            setTimeout(() => {
-                const handle = toggle.querySelector('.toggle-handle');
-                handle.style.transform = 'translateX(-50%)';
-            }, 100);
-        });
-    });
-
-    // Footswitch handler
-    const footswitch = document.getElementById('footswitch');
-    const footswitchText = footswitch.querySelector('div');
-    footswitch.addEventListener('click', () => {
-        if (!pedalState.recording && !pedalState.playing) {
-            // First click: Set Point A - show red REC
-            pedalState.recording = true;
-            footswitchText.textContent = 'REC';
-            footswitchText.style.color = '#ff0000';
-            footswitchText.style.textShadow = '0 0 20px #ff0000, 0 2px 4px rgba(0,0,0,0.8)';
-            looper.setPointA();
-            display.updateDisplayText('SET A', display.formatTime(looper.state.pointA));
-        } else if (pedalState.recording) {
-            // Second click: Set Point B and start loop - show green PLAY
-            pedalState.recording = false;
-            pedalState.playing = true;
-            footswitchText.textContent = 'PLAY';
-            footswitchText.style.color = '#00ff00';
-            footswitchText.style.textShadow = '0 0 20px #00ff00, 0 2px 4px rgba(0,0,0,0.8)';
-            looper.setPointB();
-            manip.setLoopPoints(looper);
-        } else {
-            // Third click: Stop loop - show dark grey REC
-            pedalState.playing = false;
-            footswitchText.textContent = 'REC';
-            footswitchText.style.color = '#3a3a3a';
-            footswitchText.style.textShadow = '0 2px 4px rgba(0,0,0,0.8)';
-            looper.stopLoop();
-            display.updateDisplayText('STOPPED', '--------');
-
-            // Reset after delay
-            setTimeout(() => {
-                looper.state.pointA = null;
-                looper.state.pointB = null;
-                display.updateDisplayText('READY', '--------');
-            }, 2000);
-        }
-    });
-
-    // Add drag functionality
-    const dragBar = document.getElementById('dragBar');
-    const pedal = document.querySelector('.yt-loop-pedal');
-    let isDragging = false;
-    let dragOffset = { x: 0, y: 0 };
-
-    dragBar.addEventListener('mousedown', (e) => {
-        isDragging = true;
-        const rect = pedal.getBoundingClientRect();
-        dragOffset.x = e.clientX - rect.left;
-        dragOffset.y = e.clientY - rect.top;
-        e.preventDefault();
-    });
-
-    document.addEventListener('mousemove', (e) => {
-        if (!isDragging) return;
-
-        const newLeft = e.clientX - dragOffset.x;
-        const newTop = e.clientY - dragOffset.y;
-
-        // Keep within viewport bounds
-        const maxLeft = window.innerWidth - pedal.offsetWidth;
-        const maxTop = window.innerHeight - pedal.offsetHeight;
-
-        pedal.style.left = Math.max(0, Math.min(newLeft, maxLeft)) + 'px';
-        pedal.style.top = Math.max(0, Math.min(newTop, maxTop)) + 'px';
-        pedal.style.right = 'auto';
-    });
-
-    document.addEventListener('mouseup', () => {
-        isDragging = false;
-    });
-
-    // Hamburger Menu Toggle
-    const hamburgerMenu = document.getElementById('hamburgerMenu');
-    const settingsPanel = document.getElementById('settingsPanel');
-    let menuOpen = false;
-
-    hamburgerMenu.addEventListener('click', () => {
-        menuOpen = !menuOpen;
-        settingsPanel.style.display = menuOpen ? 'block' : 'none';
-    });
-
-    // Scale Toggle Handler
-    const scaleToggle = document.querySelector('.menu-toggle[data-setting="scale"]');
-    const scaleHandle = scaleToggle.querySelector('.menu-toggle-handle');
-    let isScaledUp = false;
-
-    scaleToggle.addEventListener('click', () => {
-        isScaledUp = !isScaledUp;
-        if (isScaledUp) {
-            scaleHandle.style.left = '26px';
-            scaleToggle.style.background = '#ff3030';
-            pedal.style.transform = 'scale(0.875)'; // 0.7 * 1.25 = 0.875
-        } else {
-            scaleHandle.style.left = '2px';
-            scaleToggle.style.background = '#1a0504';
-            pedal.style.transform = 'scale(0.7)';
-        }
-    });
-
-    // Latency Compensation Toggle Handler
-    const latencyToggle = document.querySelector('.menu-toggle[data-setting="latency"]');
-    const latencyHandle = latencyToggle.querySelector('.menu-toggle-handle');
-    let latencyEnabled = true; // Enabled by default
-
-    latencyToggle.addEventListener('click', () => {
-        latencyEnabled = !latencyEnabled;
-        if (latencyEnabled) {
-            latencyHandle.style.left = '26px';
-            latencyToggle.style.background = '#ff3030';
-            looper.latencyCompensation = 0.15;
-            display.updateDisplayText('LATENCY', 'ON');
-        } else {
-            latencyHandle.style.left = '2px';
-            latencyToggle.style.background = '#1a0504';
-            looper.latencyCompensation = 0;
-            display.updateDisplayText('LATENCY', 'OFF');
-        }
-        setTimeout(() => display.showLoopInfo(looper), 2000);
-    });
-
-    // EQ Band Setup and Handlers
-    const eqBands = [60, 250, 1000, 4000, 16000];
-    const eqSliders = document.querySelectorAll('.eq-slider');
-
-    // Setup 5-band EQ filters
-    if (audio && audio.audioContext && audio.filters) {
-        const eqFilters = {};
-
-        eqFilters.band0 = audio.audioContext.createBiquadFilter();
-        eqFilters.band0.type = 'lowshelf';
-        eqFilters.band0.frequency.value = 60;
-        eqFilters.band0.gain.value = 0;
-
-        eqFilters.band1 = audio.audioContext.createBiquadFilter();
-        eqFilters.band1.type = 'peaking';
-        eqFilters.band1.frequency.value = 250;
-        eqFilters.band1.Q.value = 1.0;
-        eqFilters.band1.gain.value = 0;
-
-        eqFilters.band2 = audio.audioContext.createBiquadFilter();
-        eqFilters.band2.type = 'peaking';
-        eqFilters.band2.frequency.value = 1000;
-        eqFilters.band2.Q.value = 1.0;
-        eqFilters.band2.gain.value = 0;
-
-        eqFilters.band3 = audio.audioContext.createBiquadFilter();
-        eqFilters.band3.type = 'peaking';
-        eqFilters.band3.frequency.value = 4000;
-        eqFilters.band3.Q.value = 1.0;
-        eqFilters.band3.gain.value = 0;
-
-        eqFilters.band4 = audio.audioContext.createBiquadFilter();
-        eqFilters.band4.type = 'highshelf';
-        eqFilters.band4.frequency.value = 16000;
-        eqFilters.band4.gain.value = 0;
-
-        // Reconnect audio graph with EQ
-        try {
-            audio.sourceNode.disconnect();
-            audio.sourceNode
-                .connect(eqFilters.band0)
-                .connect(eqFilters.band1)
-                .connect(eqFilters.band2)
-                .connect(eqFilters.band3)
-                .connect(eqFilters.band4)
-                .connect(audio.filters.low)
-                .connect(audio.filters.mid)
-                .connect(audio.filters.high)
-                .connect(audio.tempoGainNode)
-                .connect(audio.compressor)
-                .connect(audio.gainNode)
-                .connect(audio.analyser)
-                .connect(audio.audioContext.destination);
-
-            console.log('5-band EQ initialized');
-        } catch (e) {
-            console.warn('EQ setup failed:', e);
-        }
-
-        // EQ Slider handlers
-        eqSliders.forEach((slider, index) => {
-            slider.addEventListener('input', (e) => {
-                const gain = parseFloat(e.target.value);
-                eqFilters[`band${index}`].gain.value = gain;
-                display.updateDisplayText(`EQ ${eqBands[index]}Hz`, `${gain > 0 ? '+' : ''}${gain.toFixed(1)}dB`);
-                setTimeout(() => display.showLoopInfo(looper), 2000);
-            });
-        });
-    }
-
-    // Pitch Shift Handler using equal temperament formula
-    const pitchShift = document.getElementById('pitchShift');
-    const pitchValue = document.getElementById('pitchValue');
-    const pitchBtns = document.querySelectorAll('.pitch-btn');
-    let currentPitchShift = 0;
-
-    function applyPitchShift(semitones) {
-        // Equal temperament: each semitone = 2^(1/12)
-        // playbackRate = 2^(semitones/12)
-        const pitchRatio = Math.pow(2, semitones / 12);
-
-        // Update parameter store to track pitch shift state
-        parameterStore.currentPitchShift = semitones;
-        parameterStore.pitchShiftActive = (semitones !== 0);
-
-        if (semitones === 0) {
-            // Re-enable pitch preservation and restore tempo control
-            if (videoEl.preservesPitch !== undefined) {
-                videoEl.preservesPitch = true;
-            } else if (videoEl.mozPreservesPitch !== undefined) {
-                videoEl.mozPreservesPitch = true;
-            } else if (videoEl.webkitPreservesPitch !== undefined) {
-                videoEl.webkitPreservesPitch = true;
-            }
-            // Let parameterStore apply the tempo knob value
-            parameterStore.applyParameters(videoEl);
-        } else {
-            // Disable preservesPitch to allow pitch shifting
-            if (videoEl.preservesPitch !== undefined) {
-                videoEl.preservesPitch = false;
-            } else if (videoEl.mozPreservesPitch !== undefined) {
-                videoEl.mozPreservesPitch = false;
-            } else if (videoEl.webkitPreservesPitch !== undefined) {
-                videoEl.webkitPreservesPitch = false;
-            }
-
-            // Apply pitch shift (affects both tempo and pitch)
-            videoEl.playbackRate = pitchRatio;
-        }
-
-        display.updateDisplayText('PITCH', `${semitones > 0 ? '+' : ''}${semitones.toFixed(1)} ST`);
-        setTimeout(() => display.showLoopInfo(looper), 2000);
-    }
-
-    pitchShift.addEventListener('input', (e) => {
-        currentPitchShift = parseFloat(e.target.value);
-        pitchValue.textContent = currentPitchShift > 0 ? `+${currentPitchShift}` : currentPitchShift;
-        applyPitchShift(currentPitchShift);
-    });
-
-    pitchBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            const shift = parseInt(btn.dataset.shift);
-            currentPitchShift += shift * 0.5;
-            currentPitchShift = Math.max(-12, Math.min(12, currentPitchShift));
-            pitchShift.value = currentPitchShift;
-            pitchValue.textContent = currentPitchShift > 0 ? `+${currentPitchShift}` : currentPitchShift;
-            applyPitchShift(currentPitchShift);
-        });
-    });
-
-    // Bookmark System
-    let bookmarks = JSON.parse(localStorage.getItem('ytLoopStationBookmarks') || '[]');
-    const saveBookmarkBtn = document.getElementById('saveBookmark');
-    const bookmarkList = document.getElementById('bookmarkList');
-
-    function updateBookmarkList() {
-        bookmarkList.innerHTML = '<option value="">Select bookmark...</option>';
-        bookmarks.forEach((bookmark, index) => {
-            const option = document.createElement('option');
-            option.value = index;
-            option.textContent = bookmark.name;
-            bookmarkList.appendChild(option);
-        });
-    }
-
-    saveBookmarkBtn.addEventListener('click', () => {
-        if (looper.state.pointA === null || looper.state.pointB === null) {
-            display.updateDisplayText('ERROR', 'NO LOOP SET');
-            setTimeout(() => display.showLoopInfo(looper), 2000);
-            return;
-        }
-
-        // Get video title from YouTube page
-        const videoTitle = document.querySelector('h1.ytd-watch-metadata yt-formatted-string')?.textContent?.trim()
-                        || document.querySelector('h1.title')?.textContent?.trim()
-                        || `Loop ${bookmarks.length + 1}`;
-
-        const bookmark = {
-            name: videoTitle,
-            url: window.location.href,
-            pointA: looper.state.pointA,
-            pointB: looper.state.pointB,
-            volume: parameterStore.getParameter('volume'),
-            tempo: parameterStore.getParameter('tempo'),
-            timestamp: Date.now()
-        };
-
-        bookmarks.push(bookmark);
-        localStorage.setItem('ytLoopStationBookmarks', JSON.stringify(bookmarks));
-        updateBookmarkList();
-
-        display.updateDisplayText('SAVED', videoTitle.substring(0, 12));
-        setTimeout(() => display.showLoopInfo(looper), 2000);
-    });
-
-    bookmarkList.addEventListener('change', (e) => {
-        const index = parseInt(e.target.value);
-        if (isNaN(index)) return;
-
-        const bookmark = bookmarks[index];
-        if (!bookmark) return;
-
-        // Check if same video
-        if (bookmark.url !== window.location.href) {
-            // Store pending bookmark index and navigate to video
-            localStorage.setItem('ytLoopStationPendingBookmark', index);
-            display.updateDisplayText('LOADING', 'VIDEO...');
-
-            // Navigate to the bookmarked video
-            setTimeout(() => {
-                window.location.href = bookmark.url;
-            }, 500);
-            return;
-        }
-
-        // Load bookmark
-        looper.state.pointA = bookmark.pointA;
-        looper.state.pointB = bookmark.pointB;
-        parameterStore.setParameter('volume', bookmark.volume);
-        parameterStore.setParameter('tempo', bookmark.tempo);
-
-        // Apply settings
-        videoEl.volume = bookmark.volume / 100;
-        const rate = bookmark.tempo <= 50
-            ? 0.5 + (bookmark.tempo / 50) * 0.5
-            : 1.0 + ((bookmark.tempo - 50) / 50) * 1.0;
-        videoEl.playbackRate = rate;
-
-        display.updateDisplayText('LOADED', bookmark.name.substring(0, 12));
-        setTimeout(() => display.showLoopInfo(looper), 2000);
-    });
-
-    updateBookmarkList();
-
-    // Check for pending bookmark and auto-load it
-    const pendingBookmarkIndex = localStorage.getItem('ytLoopStationPendingBookmark');
-    if (pendingBookmarkIndex !== null) {
-        localStorage.removeItem('ytLoopStationPendingBookmark');
-
-        const index = parseInt(pendingBookmarkIndex);
-        const bookmark = bookmarks[index];
-
-        if (bookmark && bookmark.url === window.location.href) {
-            // Wait a bit for video to be ready
-            setTimeout(() => {
-                // Load bookmark settings
-                looper.state.pointA = bookmark.pointA;
-                looper.state.pointB = bookmark.pointB;
-                parameterStore.setParameter('volume', bookmark.volume);
-                parameterStore.setParameter('tempo', bookmark.tempo);
-
-                // Apply settings
-                videoEl.volume = bookmark.volume / 100;
-                const rate = bookmark.tempo <= 50
-                    ? 0.5 + (bookmark.tempo / 50) * 0.5
-                    : 1.0 + ((bookmark.tempo - 50) / 50) * 1.0;
-                videoEl.playbackRate = rate;
-
-                // Set the video time and start playing
-                videoEl.currentTime = bookmark.pointA;
-
-                display.updateDisplayText('AUTO LOAD', bookmark.name.substring(0, 12));
-                setTimeout(() => display.showLoopInfo(looper), 2000);
-            }, 1000);
-        }
-    }
+    return null;
+  }
+
+  getLoopLength() {
+    if (this.pointA != null && this.pointB != null) return this.pointB - this.pointA;
+    return null;
+  }
 }
 
-// Setup video observer to detect video elements on any page (including Shorts)
-function setupVideoObserver() {
-    // Disconnect existing observer if any
-    if (videoObserver) {
-        videoObserver.disconnect();
+class LoopManipulator {
+  constructor(looper) {
+    this.looper = looper;
+  }
+
+  doubleLoopLength() {
+    const l = this.looper;
+    if (l.pointA == null || l.pointB == null) return;
+    const len = l.pointB - l.pointA;
+    l.pointB = l.pointB + len;
+    debugLog('Loop doubled:', l.pointA, '→', l.pointB);
+  }
+
+  halfLoopLength() {
+    const l = this.looper;
+    if (l.pointA == null || l.pointB == null) return;
+    const len = l.pointB - l.pointA;
+    if (len > 0.2) {
+      l.pointB = l.pointA + len / 2;
+      debugLog('Loop halved:', l.pointA, '→', l.pointB);
     }
+  }
 
-    videoObserver = new MutationObserver(() => {
-        // If pedal is visible but video element changed, reconnect to new video
-        if (pedalVisible) {
-            const currentVideo = findVideo();
-            if (currentVideo && !currentVideo._loopStationConnected) {
-                console.log('New video detected, updating loop station connection');
-                // Mark video as connected
-                currentVideo._loopStationConnected = true;
-            }
-        }
-    });
-
-    // Observe the entire document for added nodes
-    videoObserver.observe(document.body, {
-        childList: true,
-        subtree: true
-    });
+  jumpSection(direction) {
+    const l = this.looper;
+    if (l.pointA == null || l.pointB == null) return;
+    const len = l.pointB - l.pointA;
+    const shift = direction * len;
+    l.pointA = Math.max(0, l.pointA + shift);
+    l.pointB = l.pointA + len;
+    if (l.isLooping) l.video.currentTime = l.pointA;
+    debugLog('Section jumped:', l.pointA, '→', l.pointB);
+  }
 }
 
-// Initialize observer when content script loads
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', setupVideoObserver);
-} else {
-    setupVideoObserver();
+class DigitalDisplay {
+  constructor(svgElement) {
+    this.svg = svgElement;
+    this.line1 = svgElement.querySelector('.ytls-lcd-line1');
+    this.line2 = svgElement.querySelector('.ytls-lcd-line2');
+    this.messageTimeout = null;
+  }
+
+  update(text1, text2) {
+    if (this.line1) this.line1.textContent = text1 || '';
+    if (this.line2) this.line2.textContent = text2 || '';
+  }
+
+  showTemporary(text1, text2, duration = 2000) {
+    const prev1 = this.line1 ? this.line1.textContent : '';
+    const prev2 = this.line2 ? this.line2.textContent : '';
+    this.update(text1, text2);
+    if (this.messageTimeout) clearTimeout(this.messageTimeout);
+    this.messageTimeout = setTimeout(() => {
+      this.update(prev1, prev2);
+      this.messageTimeout = null;
+    }, duration);
+  }
+
+  showLoopInfo(pointA, pointB, state) {
+    const a = formatTime(pointA);
+    const b = formatTime(pointB);
+    const stateText = state === 'play' ? 'LOOPING' : state === 'rec' ? 'SET B...' : 'READY';
+    this.update(`A:${a}  B:${b}`, stateText);
+  }
 }
 
-// Listen for extension activation
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === 'toggle_pedal') {
-        if (pedalVisible) {
-            const pedal = document.querySelector('.yt-loop-pedal');
-            if (pedal) {
-                parameterStore.stopContinuousApply();
-                pedal.remove();
-                pedalVisible = false;
-            }
-        } else {
-            // Wait for video to be available if not present
-            let attempts = 0;
-            const maxAttempts = 10;
-            const tryCreateLoopStation = () => {
-                const video = findVideo();
-                if (video) {
-                    createLoopStation();
-                } else if (attempts < maxAttempts) {
-                    attempts++;
-                    setTimeout(tryCreateLoopStation, 200);
-                } else {
-                    console.warn('No video element found after multiple attempts');
-                }
-            };
-            tryCreateLoopStation();
-        }
-        sendResponse({success: true});
+// --- Bookmark helpers ---
+
+function getBookmarks() {
+  try {
+    return JSON.parse(localStorage.getItem('ytLoopStationBookmarks') || '[]');
+  } catch { return []; }
+}
+
+function saveBookmarks(bookmarks) {
+  localStorage.setItem('ytLoopStationBookmarks', JSON.stringify(bookmarks));
+}
+
+function applyBookmark(bm, looper, paramStore, display) {
+  if (bm.pointA != null) looper.pointA = bm.pointA;
+  if (bm.pointB != null) looper.pointB = bm.pointB;
+  if (bm.volume != null) paramStore.setVolume(bm.volume);
+  if (bm.tempo != null) paramStore.setTempo(bm.tempo);
+  paramStore.applyCurrent();
+  if (looper.pointA != null && looper.pointB != null) {
+    looper.startLoop();
+    display.showLoopInfo(looper.pointA, looper.pointB, 'play');
+  }
+  debugLog('Bookmark applied:', bm);
+}
+
+// --- UI Builder ---
+
+function buildLCD() {
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('class', 'ytls-lcd');
+  svg.setAttribute('viewBox', '0 0 276 60');
+
+  const defs = document.createElementNS(svgNS, 'defs');
+  const filter = document.createElementNS(svgNS, 'filter');
+  filter.setAttribute('id', 'ytls-glow');
+  const blur = document.createElementNS(svgNS, 'feGaussianBlur');
+  blur.setAttribute('stdDeviation', '1');
+  blur.setAttribute('result', 'glow');
+  const merge = document.createElementNS(svgNS, 'feMerge');
+  const mn1 = document.createElementNS(svgNS, 'feMergeNode');
+  mn1.setAttribute('in', 'glow');
+  const mn2 = document.createElementNS(svgNS, 'feMergeNode');
+  mn2.setAttribute('in', 'SourceGraphic');
+  merge.appendChild(mn1);
+  merge.appendChild(mn2);
+  filter.appendChild(blur);
+  filter.appendChild(merge);
+  defs.appendChild(filter);
+  svg.appendChild(defs);
+
+  const rect = document.createElementNS(svgNS, 'rect');
+  rect.setAttribute('width', '100%');
+  rect.setAttribute('height', '100%');
+  rect.setAttribute('fill', '#1a0000');
+  rect.setAttribute('rx', '4');
+  svg.appendChild(rect);
+
+  const line1 = document.createElementNS(svgNS, 'text');
+  line1.setAttribute('class', 'ytls-lcd-text ytls-lcd-glow ytls-lcd-line1');
+  line1.setAttribute('x', '10');
+  line1.setAttribute('y', '25');
+  line1.textContent = 'YT LOOP STATION';
+  svg.appendChild(line1);
+
+  const line2 = document.createElementNS(svgNS, 'text');
+  line2.setAttribute('class', 'ytls-lcd-text ytls-lcd-glow ytls-lcd-line2');
+  line2.setAttribute('x', '10');
+  line2.setAttribute('y', '48');
+  line2.textContent = 'READY';
+  svg.appendChild(line2);
+
+  return svg;
+}
+
+function buildKnob(label, initialValue) {
+  const group = document.createElement('div');
+  group.className = 'ytls-knob-group';
+
+  const knob = document.createElement('div');
+  knob.className = 'ytls-knob';
+  knob.dataset.value = initialValue;
+
+  const indicator = document.createElement('div');
+  indicator.className = 'ytls-knob-indicator';
+  const angle = ((initialValue / 100) * 270) - 135;
+  indicator.style.transform = `translateX(-50%) rotate(${angle}deg)`;
+  knob.appendChild(indicator);
+
+  const lbl = document.createElement('div');
+  lbl.className = 'ytls-knob-label';
+  lbl.textContent = label;
+
+  group.appendChild(knob);
+  group.appendChild(lbl);
+  return { element: group, knob, indicator };
+}
+
+function buildToggle(label) {
+  const group = document.createElement('div');
+  group.className = 'ytls-toggle-group';
+
+  const track = document.createElement('div');
+  track.className = 'ytls-toggle-track';
+
+  const handle = document.createElement('div');
+  handle.className = 'ytls-toggle-handle';
+  track.appendChild(handle);
+
+  const lbl = document.createElement('div');
+  lbl.className = 'ytls-toggle-label';
+  lbl.textContent = label;
+
+  group.appendChild(track);
+  group.appendChild(lbl);
+  return { element: group, track, handle };
+}
+
+function buildSettingsToggle(label, initialOn) {
+  const row = document.createElement('div');
+  row.className = 'ytls-settings-row';
+
+  const span = document.createElement('span');
+  span.textContent = label;
+
+  const toggle = document.createElement('div');
+  toggle.className = 'ytls-switch-toggle' + (initialOn ? ' on' : '');
+
+  const dot = document.createElement('div');
+  dot.className = 'ytls-switch-dot';
+  toggle.appendChild(dot);
+
+  row.appendChild(span);
+  row.appendChild(toggle);
+  return { element: row, toggle };
+}
+
+function buildEQSlider(freq, onChange) {
+  const band = document.createElement('div');
+  band.className = 'ytls-eq-band';
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = '-12';
+  slider.max = '12';
+  slider.value = '0';
+  slider.step = '1';
+  slider.className = 'ytls-eq-slider';
+  slider.addEventListener('input', () => onChange(parseFloat(slider.value)));
+
+  const label = document.createElement('div');
+  label.className = 'ytls-eq-label';
+  label.textContent = freq;
+
+  band.appendChild(slider);
+  band.appendChild(label);
+  return band;
+}
+
+function buildPedalUI() {
+  const pedal = document.createElement('div');
+  pedal.className = 'ytls-pedal';
+  pedal.id = 'yt-loop-station';
+
+  // Close button
+  const closeBtn = document.createElement('div');
+  closeBtn.className = 'ytls-close-btn';
+  closeBtn.textContent = '×';
+  pedal.appendChild(closeBtn);
+
+  // Hamburger
+  const hamburger = document.createElement('div');
+  hamburger.className = 'ytls-hamburger';
+  for (let i = 0; i < 3; i++) {
+    const line = document.createElement('div');
+    line.className = 'ytls-hamburger-line';
+    hamburger.appendChild(line);
+  }
+  pedal.appendChild(hamburger);
+
+  // Drag bar
+  const dragBar = document.createElement('div');
+  dragBar.className = 'ytls-drag-bar';
+  const dots = document.createElement('div');
+  dots.className = 'ytls-drag-bar-dots';
+  for (let i = 0; i < 5; i++) {
+    const d = document.createElement('div');
+    d.className = 'ytls-drag-dot';
+    dots.appendChild(d);
+  }
+  dragBar.appendChild(dots);
+  pedal.appendChild(dragBar);
+
+  // Control panel
+  const controlPanel = document.createElement('div');
+  controlPanel.className = 'ytls-control-panel';
+
+  const lcd = buildLCD();
+  controlPanel.appendChild(lcd);
+
+  const knobsRow = document.createElement('div');
+  knobsRow.className = 'ytls-knobs-row';
+  const volKnob = buildKnob('VOL', 50);
+  const tempoKnob = buildKnob('TEMPO', 50);
+  knobsRow.appendChild(volKnob.element);
+  knobsRow.appendChild(tempoKnob.element);
+  controlPanel.appendChild(knobsRow);
+
+  const togglesGrid = document.createElement('div');
+  togglesGrid.className = 'ytls-toggles-grid';
+  const jogA = buildToggle('JOG A');
+  const jogB = buildToggle('JOG B');
+  const section = buildToggle('SECTION');
+  const length = buildToggle('LENGTH');
+  togglesGrid.appendChild(jogA.element);
+  togglesGrid.appendChild(jogB.element);
+  togglesGrid.appendChild(section.element);
+  togglesGrid.appendChild(length.element);
+  controlPanel.appendChild(togglesGrid);
+
+  pedal.appendChild(controlPanel);
+
+  // Logo
+  const logoSection = document.createElement('div');
+  logoSection.className = 'ytls-logo-section';
+  const logo = document.createElement('img');
+  logo.src = chrome.runtime.getURL('loop-station-text.png');
+  logo.alt = 'YT Loop Station';
+  logoSection.appendChild(logo);
+  pedal.appendChild(logoSection);
+
+  // Footswitch
+  const footArea = document.createElement('div');
+  footArea.className = 'ytls-footswitch-area';
+  const footswitch = document.createElement('div');
+  footswitch.className = 'ytls-footswitch';
+  footswitch.textContent = 'REC';
+  footArea.appendChild(footswitch);
+  pedal.appendChild(footArea);
+
+  // Settings panel
+  const settings = document.createElement('div');
+  settings.className = 'ytls-settings-panel';
+  pedal.appendChild(settings);
+
+  return {
+    pedal, closeBtn, hamburger, dragBar, lcd, settings,
+    volKnob, tempoKnob, footswitch,
+    toggles: { jogA, jogB, section, length }
+  };
+}
+
+function buildSettingsContent(settings, audioEngine, looper, paramStore, display, refreshBookmarks) {
+  settings.innerHTML = '';
+
+  // Scale toggle
+  const scaleSection = document.createElement('div');
+  scaleSection.className = 'ytls-settings-section';
+  const scaleToggle = buildSettingsToggle('Scale +25%', false);
+  scaleSection.appendChild(scaleToggle.element);
+  settings.appendChild(scaleSection);
+
+  // Latency toggle
+  const latSection = document.createElement('div');
+  latSection.className = 'ytls-settings-section';
+  const latToggle = buildSettingsToggle('Latency comp (150ms)', true);
+  latSection.appendChild(latToggle.element);
+  settings.appendChild(latSection);
+
+  // EQ
+  const eqSection = document.createElement('div');
+  eqSection.className = 'ytls-settings-section';
+  const eqTitle = document.createElement('div');
+  eqTitle.className = 'ytls-settings-title';
+  eqTitle.textContent = 'EQUALIZER';
+  eqSection.appendChild(eqTitle);
+  const eqContainer = document.createElement('div');
+  eqContainer.className = 'ytls-eq-container';
+  const eqLabels = ['60', '250', '1k', '4k', '16k'];
+  eqLabels.forEach((freq, i) => {
+    eqContainer.appendChild(buildEQSlider(freq, (val) => {
+      audioEngine.setEQBand(i, val);
+      display.showTemporary('EQ', `${freq}Hz: ${val > 0 ? '+' : ''}${val}dB`);
+    }));
+  });
+  eqSection.appendChild(eqContainer);
+  settings.appendChild(eqSection);
+
+  // Pitch shift
+  const pitchSection = document.createElement('div');
+  pitchSection.className = 'ytls-settings-section ytls-pitch-section';
+  const pitchTitle = document.createElement('div');
+  pitchTitle.className = 'ytls-settings-title';
+  pitchTitle.textContent = 'PITCH SHIFT';
+  pitchSection.appendChild(pitchTitle);
+
+  const pitchDisplay = document.createElement('div');
+  pitchDisplay.className = 'ytls-pitch-display';
+  pitchDisplay.textContent = '0.0';
+  pitchSection.appendChild(pitchDisplay);
+
+  const pitchSlider = document.createElement('input');
+  pitchSlider.type = 'range';
+  pitchSlider.min = '-24';
+  pitchSlider.max = '24';
+  pitchSlider.value = '0';
+  pitchSlider.step = '1';
+  pitchSlider.className = 'ytls-pitch-slider';
+  pitchSection.appendChild(pitchSlider);
+
+  const pitchBtns = document.createElement('div');
+  pitchBtns.className = 'ytls-pitch-btns';
+
+  function updatePitch(semitones) {
+    paramStore.setPitchShift(semitones);
+    paramStore.setPitchEnabled(semitones !== 0);
+    pitchDisplay.textContent = (semitones >= 0 ? '+' : '') + semitones.toFixed(1);
+    pitchSlider.value = String(semitones * 2);
+    display.showTemporary('PITCH', `${semitones >= 0 ? '+' : ''}${semitones.toFixed(1)} st`);
+  }
+
+  const btnDown = document.createElement('button');
+  btnDown.className = 'ytls-btn';
+  btnDown.textContent = '-0.5';
+  btnDown.addEventListener('click', () => updatePitch(paramStore.pitchShift - 0.5));
+
+  const btnReset = document.createElement('button');
+  btnReset.className = 'ytls-btn';
+  btnReset.textContent = '0';
+  btnReset.addEventListener('click', () => updatePitch(0));
+
+  const btnUp = document.createElement('button');
+  btnUp.className = 'ytls-btn';
+  btnUp.textContent = '+0.5';
+  btnUp.addEventListener('click', () => updatePitch(paramStore.pitchShift + 0.5));
+
+  pitchBtns.appendChild(btnDown);
+  pitchBtns.appendChild(btnReset);
+  pitchBtns.appendChild(btnUp);
+  pitchSection.appendChild(pitchBtns);
+
+  pitchSlider.addEventListener('input', () => {
+    updatePitch(parseFloat(pitchSlider.value) / 2);
+  });
+
+  settings.appendChild(pitchSection);
+
+  // Bookmarks
+  const bmSection = document.createElement('div');
+  bmSection.className = 'ytls-settings-section';
+  const bmTitle = document.createElement('div');
+  bmTitle.className = 'ytls-settings-title';
+  bmTitle.textContent = 'BOOKMARKS';
+  bmSection.appendChild(bmTitle);
+
+  const bmSaveBtn = document.createElement('button');
+  bmSaveBtn.className = 'ytls-btn';
+  bmSaveBtn.textContent = 'Save Bookmark';
+  bmSaveBtn.addEventListener('click', () => {
+    const name = prompt('Bookmark name:');
+    if (!name) return;
+    const bookmarks = getBookmarks();
+    bookmarks.push({
+      name,
+      url: window.location.href,
+      pointA: looper.pointA,
+      pointB: looper.pointB,
+      volume: paramStore.volume,
+      tempo: paramStore.tempo,
+      timestamp: Date.now()
+    });
+    saveBookmarks(bookmarks);
+    refreshBookmarks();
+    display.showTemporary('SAVED', name);
+  });
+  bmSection.appendChild(bmSaveBtn);
+
+  const bmList = document.createElement('div');
+  bmList.className = 'ytls-bookmark-list';
+  bmSection.appendChild(bmList);
+  settings.appendChild(bmSection);
+
+  // Build info
+  const buildInfo = document.createElement('div');
+  buildInfo.className = 'ytls-build-info';
+  buildInfo.textContent = 'YT Loop Station v2.0';
+  settings.appendChild(buildInfo);
+
+  return {
+    scaleToggle: scaleToggle.toggle,
+    latToggle: latToggle.toggle,
+    bmList,
+    updatePitch
+  };
+}
+
+// --- Main creation function ---
+
+function createLoopStation(video) {
+  if (!video || document.getElementById('yt-loop-station')) return;
+  debugLog('Creating loop station for video:', video.src || video.currentSrc);
+
+  injectStyles();
+
+  // Build core objects
+  const paramStore = new ParameterStore(video);
+  const audioEngine = new HighQualityAudioEngine(video);
+  audioEngine.setup();
+
+  const looper = new VideoLooper(video);
+  looper.setAudioContext(audioEngine.audioContext, audioEngine.gainNode);
+
+  const manipulator = new LoopManipulator(looper);
+
+  // Build UI
+  const ui = buildPedalUI();
+  const display = new DigitalDisplay(ui.lcd);
+
+  // Track listeners for cleanup
+  const listeners = [];
+  function addListener(el, event, handler, opts) {
+    el.addEventListener(event, handler, opts);
+    listeners.push({ el, event, handler, opts });
+  }
+
+  // Refresh bookmarks
+  function refreshBookmarks() {
+    const bookmarks = getBookmarks();
+    settingsUI.bmList.innerHTML = '';
+    bookmarks.forEach((bm, i) => {
+      const item = document.createElement('div');
+      item.className = 'ytls-bookmark-item';
+
+      const name = document.createElement('span');
+      name.className = 'ytls-bookmark-name';
+      name.textContent = bm.name;
+      name.addEventListener('click', () => {
+        applyBookmark(bm, looper, paramStore, display);
+        updateKnobVisual(ui.volKnob, paramStore.volume);
+        updateKnobVisual(ui.tempoKnob, paramStore.tempo);
+        footState = 2;
+        updateFootswitch();
+      });
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'ytls-btn';
+      delBtn.textContent = '×';
+      delBtn.addEventListener('click', () => {
+        const bms = getBookmarks();
+        bms.splice(i, 1);
+        saveBookmarks(bms);
+        refreshBookmarks();
+      });
+
+      item.appendChild(name);
+      item.appendChild(delBtn);
+      settingsUI.bmList.appendChild(item);
+    });
+  }
+
+  const settingsUI = buildSettingsContent(
+    ui.settings, audioEngine, looper, paramStore, display, refreshBookmarks
+  );
+  refreshBookmarks();
+
+  // --- Knob interaction ---
+  function updateKnobVisual(knobObj, value) {
+    const angle = ((value / 100) * 270) - 135;
+    knobObj.indicator.style.transform = `translateX(-50%) rotate(${angle}deg)`;
+    knobObj.knob.dataset.value = value;
+  }
+
+  function setupKnobDrag(knobObj, onChange) {
+    let dragging = false;
+    let startY = 0;
+    let startVal = 0;
+
+    addListener(knobObj.knob, 'mousedown', (e) => {
+      e.preventDefault();
+      dragging = true;
+      startY = e.clientY;
+      startVal = parseFloat(knobObj.knob.dataset.value);
+      audioEngine.resumeContext();
+    });
+
+    addListener(document, 'mousemove', (e) => {
+      if (!dragging) return;
+      const delta = (startY - e.clientY) * 0.5;
+      const newVal = clamp(Math.round(startVal + delta), 0, 100);
+      updateKnobVisual(knobObj, newVal);
+      onChange(newVal);
+    });
+
+    addListener(document, 'mouseup', () => { dragging = false; });
+  }
+
+  setupKnobDrag(ui.volKnob, (val) => {
+    paramStore.setVolume(val);
+    display.showTemporary('VOLUME', `${val}%`);
+  });
+
+  setupKnobDrag(ui.tempoKnob, (val) => {
+    paramStore.setTempo(val);
+    const rate = tempoToRate(val);
+    audioEngine.smoothRateChange(rate);
+    display.showTemporary('TEMPO', `${val}% (${rate.toFixed(2)}x)`);
+  });
+
+  // --- Toggle interaction ---
+  function setupToggle(toggleObj, onLeft, onRight) {
+    addListener(toggleObj.track, 'mousedown', (e) => {
+      const rect = toggleObj.track.getBoundingClientRect();
+      const isLeft = e.clientX < rect.left + rect.width / 2;
+      toggleObj.handle.classList.add(isLeft ? 'left' : 'right');
+      if (isLeft) onLeft();
+      else onRight();
+    });
+
+    addListener(toggleObj.track, 'mouseup', () => {
+      toggleObj.handle.classList.remove('left', 'right');
+    });
+
+    addListener(toggleObj.track, 'mouseleave', () => {
+      toggleObj.handle.classList.remove('left', 'right');
+    });
+  }
+
+  setupToggle(ui.toggles.jogA,
+    () => { const v = looper.jogPoint('A', -0.05); if (v != null) display.showTemporary('JOG A', formatTime(v)); },
+    () => { const v = looper.jogPoint('A', 0.05); if (v != null) display.showTemporary('JOG A', formatTime(v)); }
+  );
+
+  setupToggle(ui.toggles.jogB,
+    () => { const v = looper.jogPoint('B', -0.05); if (v != null) display.showTemporary('JOG B', formatTime(v)); },
+    () => { const v = looper.jogPoint('B', 0.05); if (v != null) display.showTemporary('JOG B', formatTime(v)); }
+  );
+
+  setupToggle(ui.toggles.section,
+    () => { manipulator.jumpSection(-1); display.showTemporary('SECTION', '← PREV'); },
+    () => { manipulator.jumpSection(1); display.showTemporary('SECTION', 'NEXT →'); }
+  );
+
+  setupToggle(ui.toggles.length,
+    () => { manipulator.halfLoopLength(); const l = looper.getLoopLength(); display.showTemporary('LENGTH', l ? `÷2 = ${l.toFixed(2)}s` : '÷2'); },
+    () => { manipulator.doubleLoopLength(); const l = looper.getLoopLength(); display.showTemporary('LENGTH', l ? `×2 = ${l.toFixed(2)}s` : '×2'); }
+  );
+
+  // --- Footswitch ---
+  // States: 0=idle(grey REC), 1=pointA set(red REC), 2=looping(green PLAY)
+  let footState = 0;
+
+  function updateFootswitch() {
+    ui.footswitch.classList.remove('rec', 'play');
+    if (footState === 0) {
+      ui.footswitch.textContent = 'REC';
+    } else if (footState === 1) {
+      ui.footswitch.textContent = 'REC';
+      ui.footswitch.classList.add('rec');
+    } else {
+      ui.footswitch.textContent = 'PLAY';
+      ui.footswitch.classList.add('play');
     }
+  }
+
+  addListener(ui.footswitch, 'click', () => {
+    audioEngine.resumeContext();
+    if (footState === 0) {
+      // Set point A
+      const a = looper.setPointA();
+      display.showLoopInfo(a, null, 'rec');
+      footState = 1;
+    } else if (footState === 1) {
+      // Set point B and start loop
+      const b = looper.setPointB();
+      if (b != null) {
+        looper.startLoop();
+        display.showLoopInfo(looper.pointA, looper.pointB, 'play');
+        footState = 2;
+      } else {
+        display.showTemporary('ERROR', 'B must be after A');
+      }
+    } else {
+      // Stop loop
+      looper.stopLoop();
+      display.update('STOPPED', '');
+      footState = 0;
+      setTimeout(() => {
+        if (footState === 0) {
+          looper.pointA = null;
+          looper.pointB = null;
+          display.update('YT LOOP STATION', 'READY');
+        }
+      }, 2000);
+    }
+    updateFootswitch();
+  });
+
+  // --- Drag bar ---
+  let isDragging = false;
+  let dragOffsetX = 0;
+  let dragOffsetY = 0;
+
+  addListener(ui.dragBar, 'mousedown', (e) => {
+    isDragging = true;
+    const rect = ui.pedal.getBoundingClientRect();
+    dragOffsetX = e.clientX - rect.left;
+    dragOffsetY = e.clientY - rect.top;
+    ui.dragBar.style.cursor = 'grabbing';
+  });
+
+  addListener(document, 'mousemove', (e) => {
+    if (!isDragging) return;
+    ui.pedal.style.left = (e.clientX - dragOffsetX) + 'px';
+    ui.pedal.style.top = (e.clientY - dragOffsetY) + 'px';
+    ui.pedal.style.right = 'auto';
+  });
+
+  addListener(document, 'mouseup', () => {
+    if (isDragging) {
+      isDragging = false;
+      ui.dragBar.style.cursor = 'grab';
+    }
+  });
+
+  // --- Hamburger / Settings ---
+  addListener(ui.hamburger, 'click', () => {
+    ui.settings.classList.toggle('open');
+  });
+
+  // --- Scale toggle ---
+  addListener(settingsUI.scaleToggle, 'click', () => {
+    settingsUI.scaleToggle.classList.toggle('on');
+    ui.pedal.classList.toggle('ytls-scaled', settingsUI.scaleToggle.classList.contains('on'));
+  });
+
+  // --- Latency toggle ---
+  addListener(settingsUI.latToggle, 'click', () => {
+    settingsUI.latToggle.classList.toggle('on');
+    looper.latencyEnabled = settingsUI.latToggle.classList.contains('on');
+  });
+
+  // --- Close / Cleanup ---
+  function cleanup() {
+    paramStore.stopContinuousApply();
+    looper.stopLoop();
+    audioEngine.destroy();
+    listeners.forEach(({ el, event, handler, opts }) => {
+      el.removeEventListener(event, handler, opts);
+    });
+    ui.pedal.remove();
+    debugLog('Loop station destroyed');
+  }
+
+  addListener(ui.closeBtn, 'click', cleanup);
+
+  // --- Start ---
+  paramStore.startContinuousApply();
+  document.body.appendChild(ui.pedal);
+
+  // Check for pending bookmark
+  const pendingKey = 'ytLoopStationPendingBookmark';
+  const pending = localStorage.getItem(pendingKey);
+  if (pending) {
+    localStorage.removeItem(pendingKey);
+    try {
+      const bm = JSON.parse(pending);
+      setTimeout(() => {
+        applyBookmark(bm, looper, paramStore, display);
+        updateKnobVisual(ui.volKnob, paramStore.volume);
+        updateKnobVisual(ui.tempoKnob, paramStore.tempo);
+        footState = 2;
+        updateFootswitch();
+      }, 500);
+    } catch (e) {
+      debugLog('Failed to load pending bookmark:', e);
+    }
+  }
+
+  debugLog('Loop station created');
+  return { cleanup, looper, paramStore, audioEngine, display };
+}
+
+// --- Observer & Message Listener ---
+
+function findVideoAndCreate(retries = 10) {
+  const video = document.querySelector('video');
+  if (video) {
+    createLoopStation(video);
+    return;
+  }
+  if (retries > 0) {
+    setTimeout(() => findVideoAndCreate(retries - 1), 200);
+  } else {
+    debugLog('No video element found after retries');
+  }
+}
+
+const observer = new MutationObserver((mutations) => {
+  for (const mutation of mutations) {
+    for (const node of mutation.addedNodes) {
+      if (node.nodeName === 'VIDEO' || (node.querySelector && node.querySelector('video'))) {
+        if (!document.getElementById('yt-loop-station')) {
+          const video = node.nodeName === 'VIDEO' ? node : node.querySelector('video');
+          if (video) createLoopStation(video);
+        }
+      }
+    }
+  }
 });
+
+observer.observe(document.body || document.documentElement, {
+  childList: true,
+  subtree: true
+});
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.action === 'toggle_pedal') {
+    const existing = document.getElementById('yt-loop-station');
+    if (existing) {
+      existing.querySelector('.ytls-close-btn')?.click();
+    } else {
+      findVideoAndCreate();
+    }
+  }
+});
+
+// Set up observer on load (don't auto-create — wait for toggle_pedal message)
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    // Observer already running, just check for pending bookmark
+    const pending = localStorage.getItem('ytLoopStationPendingBookmark');
+    if (pending) findVideoAndCreate();
+  });
+} else {
+  const pending = localStorage.getItem('ytLoopStationPendingBookmark');
+  if (pending) findVideoAndCreate();
+}
