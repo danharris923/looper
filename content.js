@@ -246,10 +246,12 @@ class ParameterStore {
 
   applyCurrent() {
     if (!this.video) return;
-    this.video.volume = clamp(this.volume / 100, 0, 1);
+    const vol = clamp(this.volume / 100, 0, 1);
     const rate = tempoToRate(this.tempo);
-    this.video.playbackRate = rate;
-    setPreservesPitch(this.video, !this.pitchEnabled);
+    const preserve = !this.pitchEnabled;
+    if (Math.abs(this.video.volume - vol) > 0.001) this.video.volume = vol;
+    if (Math.abs(this.video.playbackRate - rate) > 0.001) this.video.playbackRate = rate;
+    setPreservesPitch(this.video, preserve);
   }
 
   setVolume(val) {
@@ -268,7 +270,7 @@ class ParameterStore {
 
   setPitchEnabled(enabled) {
     this.pitchEnabled = enabled;
-    setPreservesPitch(this.video, !enabled);
+    this.applyCurrent();
   }
 }
 
@@ -318,7 +320,6 @@ class HighQualityAudioEngine {
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = 256;
 
-      // Chain: source → EQ → tempoGain → compressor → gain → analyser → destination
       let prev = this.source;
       for (const filter of this.eqFilters) {
         prev.connect(filter);
@@ -438,8 +439,14 @@ class VideoLooper {
     debugLog('Loop stopped');
   }
 
+  reset() {
+    this.stopLoop();
+    this.pointA = null;
+    this.pointB = null;
+  }
+
   _onTimeUpdate() {
-    if (!this.isLooping || this.pointA == null || this.pointB == null) return;
+    if (this.pointA == null || this.pointB == null) return;
     const current = this.video.currentTime;
     const fadeStart = this.pointB - this.crossfadeDuration;
 
@@ -452,11 +459,14 @@ class VideoLooper {
   }
 
   _startCrossfade() {
+    const halfMs = (this.crossfadeDuration / 2) * 1000;
+
     if (!this.gainNode || !this.audioContext) {
       this.crossfadeTimeout = setTimeout(() => {
-        this.video.currentTime = this.pointA;
         this.crossfadeTimeout = null;
-      }, this.crossfadeDuration * 500);
+        if (!this.isLooping) return;
+        this.video.currentTime = this.pointA;
+      }, halfMs);
       return;
     }
 
@@ -469,13 +479,14 @@ class VideoLooper {
     this.gainNode.gain.linearRampToValueAtTime(0.0, now + half);
 
     this.crossfadeTimeout = setTimeout(() => {
+      this.crossfadeTimeout = null;
+      if (!this.isLooping) return;
       this.video.currentTime = this.pointA;
       const nowAfter = ctx.currentTime;
       this.gainNode.gain.cancelScheduledValues(nowAfter);
       this.gainNode.gain.setValueAtTime(0.0, nowAfter);
       this.gainNode.gain.linearRampToValueAtTime(1.0, nowAfter + half);
-      this.crossfadeTimeout = null;
-    }, half * 1000);
+    }, halfMs);
   }
 
   jogPoint(point, delta) {
@@ -537,21 +548,27 @@ class DigitalDisplay {
     this.svg = svgElement;
     this.line1 = svgElement.querySelector('.ytls-lcd-line1');
     this.line2 = svgElement.querySelector('.ytls-lcd-line2');
+    this._persistent1 = '';
+    this._persistent2 = '';
     this.messageTimeout = null;
   }
 
   update(text1, text2) {
-    if (this.line1) this.line1.textContent = text1 || '';
-    if (this.line2) this.line2.textContent = text2 || '';
+    this._persistent1 = text1 || '';
+    this._persistent2 = text2 || '';
+    this._render(this._persistent1, this._persistent2);
+  }
+
+  _render(t1, t2) {
+    if (this.line1) this.line1.textContent = t1;
+    if (this.line2) this.line2.textContent = t2;
   }
 
   showTemporary(text1, text2, duration = 2000) {
-    const prev1 = this.line1 ? this.line1.textContent : '';
-    const prev2 = this.line2 ? this.line2.textContent : '';
-    this.update(text1, text2);
+    this._render(text1 || '', text2 || '');
     if (this.messageTimeout) clearTimeout(this.messageTimeout);
     this.messageTimeout = setTimeout(() => {
-      this.update(prev1, prev2);
+      this._render(this._persistent1, this._persistent2);
       this.messageTimeout = null;
     }, duration);
   }
@@ -728,13 +745,11 @@ function buildPedalUI() {
   pedal.className = 'ytls-pedal';
   pedal.id = 'yt-loop-station';
 
-  // Close button
   const closeBtn = document.createElement('div');
   closeBtn.className = 'ytls-close-btn';
   closeBtn.textContent = '×';
   pedal.appendChild(closeBtn);
 
-  // Hamburger
   const hamburger = document.createElement('div');
   hamburger.className = 'ytls-hamburger';
   for (let i = 0; i < 3; i++) {
@@ -744,7 +759,6 @@ function buildPedalUI() {
   }
   pedal.appendChild(hamburger);
 
-  // Drag bar
   const dragBar = document.createElement('div');
   dragBar.className = 'ytls-drag-bar';
   const dots = document.createElement('div');
@@ -757,7 +771,6 @@ function buildPedalUI() {
   dragBar.appendChild(dots);
   pedal.appendChild(dragBar);
 
-  // Control panel
   const controlPanel = document.createElement('div');
   controlPanel.className = 'ytls-control-panel';
 
@@ -786,7 +799,6 @@ function buildPedalUI() {
 
   pedal.appendChild(controlPanel);
 
-  // Logo
   const logoSection = document.createElement('div');
   logoSection.className = 'ytls-logo-section';
   const logo = document.createElement('img');
@@ -795,7 +807,6 @@ function buildPedalUI() {
   logoSection.appendChild(logo);
   pedal.appendChild(logoSection);
 
-  // Footswitch
   const footArea = document.createElement('div');
   footArea.className = 'ytls-footswitch-area';
   const footswitch = document.createElement('div');
@@ -804,7 +815,6 @@ function buildPedalUI() {
   footArea.appendChild(footswitch);
   pedal.appendChild(footArea);
 
-  // Settings panel
   const settings = document.createElement('div');
   settings.className = 'ytls-settings-panel';
   pedal.appendChild(settings);
@@ -962,6 +972,9 @@ function buildSettingsContent(settings, audioEngine, looper, paramStore, display
 
 // --- Main creation function ---
 
+let activeCleanup = null;
+const PENDING_BM_KEY = 'ytLoopStationPendingBookmark';
+
 function createLoopStation(video) {
   if (!video || document.getElementById('yt-loop-station')) return;
   debugLog('Creating loop station for video:', video.src || video.currentSrc);
@@ -1000,13 +1013,7 @@ function createLoopStation(video) {
       const name = document.createElement('span');
       name.className = 'ytls-bookmark-name';
       name.textContent = bm.name;
-      name.addEventListener('click', () => {
-        applyBookmark(bm, looper, paramStore, display);
-        updateKnobVisual(ui.volKnob, paramStore.volume);
-        updateKnobVisual(ui.tempoKnob, paramStore.tempo);
-        footState = 2;
-        updateFootswitch();
-      });
+      name.addEventListener('click', () => activateBookmark(bm));
 
       const delBtn = document.createElement('button');
       delBtn.className = 'ytls-btn';
@@ -1029,7 +1036,7 @@ function createLoopStation(video) {
   );
   refreshBookmarks();
 
-  // --- Knob interaction ---
+
   function updateKnobVisual(knobObj, value) {
     const angle = ((value / 100) * 270) - 135;
     knobObj.indicator.style.transform = `translateX(-50%) rotate(${angle}deg)`;
@@ -1072,7 +1079,7 @@ function createLoopStation(video) {
     display.showTemporary('TEMPO', `${val}% (${rate.toFixed(2)}x)`);
   });
 
-  // --- Toggle interaction ---
+
   function setupToggle(toggleObj, onLeft, onRight) {
     addListener(toggleObj.track, 'mousedown', (e) => {
       const rect = toggleObj.track.getBoundingClientRect();
@@ -1111,9 +1118,8 @@ function createLoopStation(video) {
     () => { manipulator.doubleLoopLength(); const l = looper.getLoopLength(); display.showTemporary('LENGTH', l ? `×2 = ${l.toFixed(2)}s` : '×2'); }
   );
 
-  // --- Footswitch ---
-  // States: 0=idle(grey REC), 1=pointA set(red REC), 2=looping(green PLAY)
   let footState = 0;
+  let resetTimeout = null;
 
   function updateFootswitch() {
     ui.footswitch.classList.remove('rec', 'play');
@@ -1128,15 +1134,25 @@ function createLoopStation(video) {
     }
   }
 
+  function activateBookmark(bm) {
+    applyBookmark(bm, looper, paramStore, display);
+    updateKnobVisual(ui.volKnob, paramStore.volume);
+    updateKnobVisual(ui.tempoKnob, paramStore.tempo);
+    footState = 2;
+    updateFootswitch();
+  }
+
   addListener(ui.footswitch, 'click', () => {
     audioEngine.resumeContext();
+    if (resetTimeout) {
+      clearTimeout(resetTimeout);
+      resetTimeout = null;
+    }
     if (footState === 0) {
-      // Set point A
       const a = looper.setPointA();
       display.showLoopInfo(a, null, 'rec');
       footState = 1;
     } else if (footState === 1) {
-      // Set point B and start loop
       const b = looper.setPointB();
       if (b != null) {
         looper.startLoop();
@@ -1146,14 +1162,13 @@ function createLoopStation(video) {
         display.showTemporary('ERROR', 'B must be after A');
       }
     } else {
-      // Stop loop
       looper.stopLoop();
       display.update('STOPPED', '');
       footState = 0;
-      setTimeout(() => {
+      resetTimeout = setTimeout(() => {
+        resetTimeout = null;
         if (footState === 0) {
-          looper.pointA = null;
-          looper.pointB = null;
+          looper.reset();
           display.update('YT LOOP STATION', 'READY');
         }
       }, 2000);
@@ -1161,7 +1176,7 @@ function createLoopStation(video) {
     updateFootswitch();
   });
 
-  // --- Drag bar ---
+
   let isDragging = false;
   let dragOffsetX = 0;
   let dragOffsetY = 0;
@@ -1188,25 +1203,25 @@ function createLoopStation(video) {
     }
   });
 
-  // --- Hamburger / Settings ---
+
   addListener(ui.hamburger, 'click', () => {
     ui.settings.classList.toggle('open');
   });
 
-  // --- Scale toggle ---
+
   addListener(settingsUI.scaleToggle, 'click', () => {
     settingsUI.scaleToggle.classList.toggle('on');
     ui.pedal.classList.toggle('ytls-scaled', settingsUI.scaleToggle.classList.contains('on'));
   });
 
-  // --- Latency toggle ---
+
   addListener(settingsUI.latToggle, 'click', () => {
     settingsUI.latToggle.classList.toggle('on');
     looper.latencyEnabled = settingsUI.latToggle.classList.contains('on');
   });
 
-  // --- Close / Cleanup ---
   function cleanup() {
+    if (resetTimeout) clearTimeout(resetTimeout);
     paramStore.stopContinuousApply();
     looper.stopLoop();
     audioEngine.destroy();
@@ -1214,36 +1229,30 @@ function createLoopStation(video) {
       el.removeEventListener(event, handler, opts);
     });
     ui.pedal.remove();
+    activeCleanup = null;
     debugLog('Loop station destroyed');
   }
 
   addListener(ui.closeBtn, 'click', cleanup);
 
-  // --- Start ---
   paramStore.startContinuousApply();
   document.body.appendChild(ui.pedal);
 
   // Check for pending bookmark
-  const pendingKey = 'ytLoopStationPendingBookmark';
-  const pending = localStorage.getItem(pendingKey);
+  const pending = localStorage.getItem(PENDING_BM_KEY);
   if (pending) {
-    localStorage.removeItem(pendingKey);
+    localStorage.removeItem(PENDING_BM_KEY);
     try {
       const bm = JSON.parse(pending);
-      setTimeout(() => {
-        applyBookmark(bm, looper, paramStore, display);
-        updateKnobVisual(ui.volKnob, paramStore.volume);
-        updateKnobVisual(ui.tempoKnob, paramStore.tempo);
-        footState = 2;
-        updateFootswitch();
-      }, 500);
+      setTimeout(() => activateBookmark(bm), 500);
     } catch (e) {
       debugLog('Failed to load pending bookmark:', e);
     }
   }
 
+  activeCleanup = cleanup;
   debugLog('Loop station created');
-  return { cleanup, looper, paramStore, audioEngine, display };
+  return cleanup;
 }
 
 // --- Observer & Message Listener ---
@@ -1261,43 +1270,20 @@ function findVideoAndCreate(retries = 10) {
   }
 }
 
-const observer = new MutationObserver((mutations) => {
-  for (const mutation of mutations) {
-    for (const node of mutation.addedNodes) {
-      if (node.nodeName === 'VIDEO' || (node.querySelector && node.querySelector('video'))) {
-        if (!document.getElementById('yt-loop-station')) {
-          const video = node.nodeName === 'VIDEO' ? node : node.querySelector('video');
-          if (video) createLoopStation(video);
-        }
-      }
-    }
-  }
-});
-
-observer.observe(document.body || document.documentElement, {
-  childList: true,
-  subtree: true
-});
-
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'toggle_pedal') {
-    const existing = document.getElementById('yt-loop-station');
-    if (existing) {
-      existing.querySelector('.ytls-close-btn')?.click();
+    if (activeCleanup) {
+      activeCleanup();
     } else {
       findVideoAndCreate();
     }
   }
 });
 
-// Set up observer on load (don't auto-create — wait for toggle_pedal message)
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
-    // Observer already running, just check for pending bookmark
-    const pending = localStorage.getItem('ytLoopStationPendingBookmark');
-    if (pending) findVideoAndCreate();
+    if (localStorage.getItem(PENDING_BM_KEY)) findVideoAndCreate();
   });
 } else {
-  const pending = localStorage.getItem('ytLoopStationPendingBookmark');
-  if (pending) findVideoAndCreate();
+  if (localStorage.getItem(PENDING_BM_KEY)) findVideoAndCreate();
 }
