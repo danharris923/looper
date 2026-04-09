@@ -4,6 +4,7 @@
   "version": "2026.3.27",
   "description": "Precision A/B looping with 30ms crossfade for seamless YouTube playback. Perfect for music practice and language learning.",
   "permissions": ["activeTab"],
+  "host_permissions": ["*://www.youtube.com/*"],
   "action": {
     "default_title": "Toggle Loop Station"
   },

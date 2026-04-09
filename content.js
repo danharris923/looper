@@ -395,19 +395,25 @@ class VideoLooper {
     this.gainNode = gainNode;
   }
 
-  getCompensatedTime() {
+  getCompensatedTime(eventDelay = 0) {
     const raw = this.video.currentTime;
-    return this.latencyEnabled ? Math.max(0, raw - this.latencyCompensation) : raw;
+    if (!this.latencyEnabled) return Math.max(0, raw - eventDelay);
+    // Auto-include actual audio output latency reported by the browser
+    // (Bluetooth: 100-300ms, internal: 20-50ms) on top of the user-set
+    // reaction-time baseline. eventDelay is the gap between the hardware
+    // input event and the JS handler, back-calculated via event.timeStamp.
+    const outputLat = (this.audioContext && this.audioContext.outputLatency) || 0;
+    return Math.max(0, raw - this.latencyCompensation - outputLat - eventDelay);
   }
 
-  setPointA() {
-    this.pointA = this.getCompensatedTime();
+  setPointA(eventDelay = 0) {
+    this.pointA = this.getCompensatedTime(eventDelay);
     debugLog('Point A set:', this.pointA);
     return this.pointA;
   }
 
-  setPointB() {
-    this.pointB = this.getCompensatedTime();
+  setPointB(eventDelay = 0) {
+    this.pointB = this.getCompensatedTime(eventDelay);
     if (this.pointB <= this.pointA) {
       this.pointB = null;
       return null;
@@ -1142,18 +1148,18 @@ function createLoopStation(video) {
     updateFootswitch();
   }
 
-  addListener(ui.footswitch, 'click', () => {
+  function doFootswitchAction(eventDelay = 0) {
     audioEngine.resumeContext();
     if (resetTimeout) {
       clearTimeout(resetTimeout);
       resetTimeout = null;
     }
     if (footState === 0) {
-      const a = looper.setPointA();
+      const a = looper.setPointA(eventDelay);
       display.showLoopInfo(a, null, 'rec');
       footState = 1;
     } else if (footState === 1) {
-      const b = looper.setPointB();
+      const b = looper.setPointB(eventDelay);
       if (b != null) {
         looper.startLoop();
         display.showLoopInfo(looper.pointA, looper.pointB, 'play');
@@ -1174,6 +1180,26 @@ function createLoopStation(video) {
       }, 2000);
     }
     updateFootswitch();
+  }
+
+  // pointerdown fires on press (not mouseup), and we subtract the
+  // handler-scheduling delay using the OS-level event.timeStamp.
+  addListener(ui.footswitch, 'pointerdown', (e) => {
+    e.preventDefault();
+    const eventDelay = Math.max(0, (performance.now() - e.timeStamp) / 1000);
+    doFootswitchAction(eventDelay);
+  });
+
+  // Keyboard hotkey: Backslash (\) — unused by YouTube, lower input
+  // latency than mouse clicks, ergonomic for musicians.
+  addListener(document, 'keydown', (e) => {
+    if (e.key !== '\\') return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const eventDelay = Math.max(0, (performance.now() - e.timeStamp) / 1000);
+    doFootswitchAction(eventDelay);
   });
 
 
